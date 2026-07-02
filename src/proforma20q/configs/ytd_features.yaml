@@ -1,0 +1,24 @@
+# List of features that are year-to-date and need to be converted to quarterly
+ytd_features:
+  - fopoy       # Other Operating CF Adjustments
+  - oancfy      # Cash Flow from Operations
+  - capxy       # Capital Expenditures
+  - ivchy       # Investment Changes
+  - aqcy        # Acquisitions
+  - ivacoy      # Other Investing Activities
+  - sivy        # Sale of Investments
+  - sppey       # Sale of Property
+  - ivstchy     # Short-Term Investments - Change
+  - ivncfy      # Cash Flow from Investing
+  - sstky       # Stock Issuance
+  - prstkcy     # Stock Repurchases
+  - dltisy      # Long-Term Debt Issuance
+  - dltry       # Long-Term Debt Repayment
+  - dvy         # Dividends Paid
+  - dlcchy      # Changes in Current Debt
+  - txbcofy     # Excess Tax Benefit of Stock Options - Financing
+  - fiaoy       # Other Financing Activities
+  - fincfy      # Cash Flow from Financing
+  - intpny      # Interest Paid, Net
+  - txpdy       # Taxes Paid
+  - exrey       # Effect of Exchange Rate on Cash

@@ -1,0 +1,8 @@
+{
+  "_status": "unpopulated",
+  "_note": "Populated by the benchmark maintainer from the canonical R13 build via `python -m proforma20q.checksums` (write_checksums). Until then, `proforma20q build --verify` reports 'unpopulated' and `--report-drift` has nothing to compare against. Contains ONLY hashes (md5 of each artifact file + per-column md5 of the regularized tabular columns) -- no WRDS-derived values.",
+  "task_version": "r13",
+  "suffix": "pf_full__r13_node_optionD_indfe_val8",
+  "download_date": null,
+  "artifacts": {}
+}

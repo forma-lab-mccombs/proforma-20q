@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# HARD RULE: no WRDS-derived content in git, ever. The build writes here; none of
+# it is ever committed. Only code, configs, and checksums live in the repo.
+# ---------------------------------------------------------------------------
+data/
+results/
+*.parquet
+*.csv
+
+# ...except the tiny SYNTHETIC example artifacts, which are safe to commit.
+!examples/*.parquet
+
+# WRDS credentials must never be committed.
+.pgpass
+*.pgpass
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

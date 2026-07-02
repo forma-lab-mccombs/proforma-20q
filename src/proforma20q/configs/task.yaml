@@ -1,0 +1,96 @@
+# ProForma-20Q canonical task definition.
+#
+# This file is the SINGLE SOURCE OF TRUTH for the benchmark task. Every field is
+# distilled from the R13 build in the main Forma research repo
+# (configs/r13_baselines.yaml data section) so that a rebuild here reproduces the
+# exact data environment the ICAIF '26 paper evaluates on. Do NOT edit these
+# values to "improve" a result -- changing them defines a different benchmark.
+#
+# Nothing here is WRDS-derived: these are query parameters, feature names, and
+# transform hyperparameters only. No firm lists, no data.
+
+benchmark:
+  name: proforma-20q
+  # Bumps when the task definition (splits/targets/transform) changes in a way
+  # that invalidates published checksums and leaderboard numbers.
+  task_version: "r13"
+  feature_set: pf_full            # the 78 pf_full statement items (see feature_sets.yaml)
+
+# ---------------------------------------------------------------------------
+# Universe & sample (WRDS Compustat quarterly, comp.fundq)
+# ---------------------------------------------------------------------------
+universe:
+  source: "comp.fundq"            # Compustat Fundamentals Quarterly, via WRDS
+  start_year: 1970                # download window start (calendar)
+  end_year: 2024                  # download window end (calendar)
+  compustat_filters:
+    indfmt: INDL                  # industrial format
+    datafmt: STD                  # standardized
+    consol: C                     # consolidated
+    popsrc: D                     # domestic
+  # Financial-sector exclusion (standard in empirical finance).
+  sector_exclusions:
+    sic_ranges:
+      - { start: 6000, end: 6999 }
+
+# ---------------------------------------------------------------------------
+# Splits -- by CALENDAR time. train_end_year also moves the reg-stats
+# (mu/sigma/k) estimation cutoff, so mu/sigma are estimated on train only.
+# ---------------------------------------------------------------------------
+splits:
+  train_end_year: 2001            # train 1971-2001
+  val_end_year: 2009              # val   2002-2009
+  # test 2010-2024 (through end_year)
+
+# ---------------------------------------------------------------------------
+# Targets & horizons
+# ---------------------------------------------------------------------------
+targets:
+  all: true                       # all 78 pf_full items are joint targets
+  present_in_q0: true             # a cell is a target only if the item is observed at origin t
+horizons: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+
+# ---------------------------------------------------------------------------
+# Feature engineering / regularization pipeline.
+# Transform: scale by firm-size proxy -> asinh -> per-item z-score -> clamp.
+# (asinh is correct; some legacy docs say signed-log -- they are wrong.)
+# ---------------------------------------------------------------------------
+feature_engineering:
+  min_lookback: 4                 # need >= 4 quarters of history
+  recent_levels: 4                # 4 most-recent regularized levels per item
+  yoy_changes: 8                  # 8 year-over-year changes per item (12-quarter lookback total)
+  forecast_horizon: 20
+  max_abs_zscore: 6.0             # clamp |z| <= 6.0 (tabular pipeline)
+  tuple_max_abs_zscore: 6.0       # runtime clamp for the tuple view
+  # Reg-stats (mu/sigma/k) estimation lags -- see build.py / transforms.py.
+  reg_mu_scale_lag: 0
+  reg_mu_feature_lags: [0]
+  reg_sig_scale_lag: 4
+  reg_sig_feature_lags: [0, 8]
+  reg_k_scale_lag: 4
+  reg_k_feature_lags: [0, 8]
+  imputation:
+    use: true
+    n_factors: 10
+
+# ---------------------------------------------------------------------------
+# Size-proxy scaling (see feature_sets.yaml `scaling`, repeated here for the
+# builder). size = constant + |ltq| + |seqq|, falling back to |atq|.
+# ---------------------------------------------------------------------------
+scaling:
+  constant: 1.0e-3
+  features_to_sum: [ltq, seqq]
+  fallbacks: [atq]
+
+# ---------------------------------------------------------------------------
+# Industry fixed effects (tabular view only): FF48 dummies derived from SIC via
+# configs/ff48_sic_ranges.json. No-op for the tuple view.
+# ---------------------------------------------------------------------------
+industry:
+  tabular_industry_fe: true
+  ff48_ranges: ff48_sic_ranges.json
+
+# ---------------------------------------------------------------------------
+# Determinism
+# ---------------------------------------------------------------------------
+seed: 61

@@ -1,0 +1,23 @@
+# Pinned environment for the BIT-EXACT canonical build.
+#
+# `pip install -r requirements-lock.txt` reproduces the environment whose md5s
+# are published in src/proforma20q/checksums.json. The looser deps in
+# pyproject.toml are enough to SCORE forecasts and run the baselines on a modern
+# stack; this lockfile is what a reviewer uses to reproduce the data build to the
+# digit (per the paper's "one command rebuilds the exact data environment").
+#
+# NOTE (maintainer): these pins reflect the canonical R13 build environment
+# (pandas<1.6, numpy<2.0). Finalize the exact patch versions from the machine
+# that produced the published checksums, then commit alongside checksums.json.
+
+numpy==1.26.4
+pandas==1.5.3
+scipy==1.11.4
+scikit-learn==1.3.2
+fastparquet==2024.2.0
+pyyaml==6.0.1
+joblib==1.3.2
+tqdm==4.66.1
+
+# Download path only (not needed to score forecasts):
+wrds==3.2.0

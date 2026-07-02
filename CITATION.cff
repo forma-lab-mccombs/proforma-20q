@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use ProForma-20Q, please cite the benchmark and its companion paper."
+title: "ProForma-20Q: A Benchmark for Joint Probabilistic Forecasting of Quarterly Financial Statements"
+abstract: >-
+  ProForma-20Q defines a public, reproducible benchmark task for joint
+  probabilistic forecasting of the complete quarterly financial statements of
+  U.S. public firms at horizons of 1 to 20 quarters. Given WRDS credentials, one
+  command rebuilds the exact data environment and evaluation. The benchmark ships
+  the data build, splits, targets, regularization transform, evaluation protocol,
+  submission format, and reference baselines -- but no data and no model.
+type: software
+version: 0.1.0
+license: Apache-2.0
+repository-code: "https://github.com/forma-lab-mccombs/proforma-20q"
+keywords:
+  - benchmark
+  - financial-statement-forecasting
+  - probabilistic-forecasting
+  - Compustat
+# NOTE: authorship is intentionally minimal here so the repository is trivial to
+# mirror anonymously for double-blind review. Populate authors/preferred-citation
+# at (de-anonymized) public release.
+authors:
+  - name: "The ProForma-20Q Authors"
+preferred-citation:
+  type: conference-paper
+  title: "ProForma-20Q (ICAIF '26)"
+  year: 2026
+  authors:
+    - name: "The ProForma-20Q Authors"

@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proforma-20q"
+version = "0.1.0"
+description = "ProForma-20Q: a benchmark for joint probabilistic forecasting of complete quarterly financial statements at horizons 1-20 quarters."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+keywords = [
+    "benchmark", "financial-forecasting", "compustat", "time-series",
+    "probabilistic-forecasting", "quarterly-financials",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+# Runtime deps are kept deliberately loose so the scoring/baseline path installs
+# on any modern scientific-Python stack. For a BIT-EXACT canonical rebuild (whose
+# md5s match the published checksums) install the pinned lockfile instead:
+#     pip install -r requirements-lock.txt
+# See README "Reproducing the canonical build".
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "fastparquet",
+    "pyyaml",
+    "joblib",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# The WRDS client is only needed for `proforma20q download` / `build`. Scoring a
+# forecast file and running the baselines never touch it.
+wrds = ["wrds"]
+dev = ["pytest>=7", "pyarrow"]
+
+[project.scripts]
+proforma20q = "proforma20q.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/forma-lab-mccombs/proforma-20q"
+Repository = "https://github.com/forma-lab-mccombs/proforma-20q"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+proforma20q = ["configs/*.yaml", "configs/*.json", "checksums.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

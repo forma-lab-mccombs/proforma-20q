@@ -1,0 +1,503 @@
+# Feature set definitions for financial data processing
+# This file defines which financial line items to include in different feature sets
+
+feature_sets:
+  # Core feature set - Essential financial statement items
+  core:
+    description: "Core financial statement items for basic analysis"
+    
+    # Income Statement items
+    income_statement:
+      - revtq      # Revenue
+      - cogsq      # Cost of Goods Sold  
+      - oiadpq     # Operating Income (EBIT)
+      - niq        # Net Income
+      - dpq        # Depreciation & Amortization
+
+    # Balance Sheet items
+    balance_sheet:
+      - cheq       # Cash & Cash Equivalents
+      - ppentq     # Property, Plant & Equipment, Net
+      - atq        # Total Assets
+      - ltq        # Total Liabilities
+      - seqq       # Total Shareholders Equity
+      - dlttq      # Long-Term Debt
+
+    # Additional computed items (these would be calculated)
+    computed:
+      - gpq    # Gross Profit = Revenue - COGS
+  
+  # Pro Forma feature set - Original comprehensive standalone set
+  pro_forma:
+    description: "Full pro forma feature set with granular balance sheet, intermediate income statement aggregates, and detailed cash flow items"
+
+    # Balance Sheet items
+    balance_sheet:
+      # Assets
+      - cheq       # Cash & Cash Equivalents
+      - invtq      # Inventory
+      - rectq      # Accounts Receivable
+      - acoq       # Other Current Assets
+      - gdwlq      # Goodwill
+      - ppentq     # Property, Plant & Equipment, Net
+      - aoq        # Other Assets
+      - atq        # Total Assets
+      # Liabilities
+      - apq        # Accounts Payable
+      - lcoq       # Other Current Liabilities
+      - dlcq       # Short-Term Debt
+      - drltq      # Deferred Revenue, Long-Term
+      - dlttq      # Long-Term Debt
+      - txdbq      # Deferred Taxes
+      - loq        # Other Liabilities
+      - ltq        # Total Liabilities
+      # Equity
+      - cstkq      # Common Stock
+      - capsq      # Capital Surplus
+      - req        # Retained Earnings
+      - tstkq      # Treasury Stock
+      - ceqq       # Common Equity
+      - pstkq      # Preferred Stock
+      - seqq       # Total Stockholders' Equity
+      - mibq       # Minority Interest (Balance Sheet)
+
+    # Income Statement items
+    income_statement:
+      - revtq      # Revenue
+      - cogsq      # Cost of Goods Sold
+      - xsgaq      # Selling, General & Administrative
+      - xrdq       # Research & Development
+      - dpq        # Depreciation & Amortization
+      - oibdpq     # EBITDA
+      - oiadpq     # Operating Income (EBIT)
+      - xintq      # Interest Expense
+      - nopiq      # Non-Operating Income
+      - piq        # Pre-Tax Income
+      - txtq       # Income Tax Expense
+      - niq        # Net Income
+      - xoprq      # Total Operating Expenses
+
+    # Cash Flow items (YTD vars converted to quarterly by pipeline)
+    cash_flow:
+      - fopoq      # Other Operating CF Adjustments
+      - oancfq     # Operating Cash Flow
+      - capxq      # Capital Expenditures
+      - ivchq      # Investment Changes
+      - aqcq       # Acquisitions
+      - ivacoq     # Other Investing Activities
+      - ivncfq     # Investing Cash Flow
+      - sstkq      # Stock Issuance
+      - prstkcq    # Stock Repurchases
+      - dltisq     # Long-Term Debt Issuance
+      - dltrq      # Long-Term Debt Repayment
+      - dvq        # Dividends Paid
+      - fiaoq      # Other Financing Activities
+      - fincfq     # Financing Cash Flow
+      - intpnq     # Interest Paid, Net
+      - txpdq      # Taxes Paid
+
+    # Computed items
+    computed:
+      - gpq        # Gross Profit = Revenue - COGS
+      - fcfq       # Free Cash Flow = Operating CF - CapEx
+      - aociq      # Accumulated Other Comprehensive Income (from 4 components)
+
+  # PF Full - Expanded pro forma set with Tier 1 additions (actq, lctq, ancq,
+  # intanq, intanoq, ibq, ppegtq, dpactq, drcq, stkcoq) and 9 new identities.
+  pf_full:
+    description: "Full pro forma feature set with granular balance sheet, intermediate income statement aggregates, and detailed cash flow items"
+
+    # Balance Sheet items
+    balance_sheet:
+      # Assets
+      - cheq       # Cash & Cash Equivalents
+      - invtq      # Inventory
+      - rectq      # Accounts Receivable
+      - acoq       # Other Current Assets
+      - actq       # Current Assets - Total
+      - gdwlq      # Goodwill
+      - intanoq    # Other Intangibles
+      - intanq     # Intangible Assets - Total
+      - ppentq     # Property, Plant & Equipment, Net
+      - dpactq     # Accumulated Depreciation
+      - ppegtq     # Property, Plant & Equipment, Gross
+      - aoq        # Other Assets (raw; used to compute aoq_ex_intanq)
+      - ancq       # Non-Current Assets - Total
+      - atq        # Total Assets
+      # Liabilities
+      - apq        # Accounts Payable
+      - lcoq       # Other Current Liabilities
+      - dlcq       # Short-Term Debt
+      - txpq       # Income Taxes Payable
+      - drcq       # Deferred Revenue - Current
+      - lctq       # Current Liabilities - Total
+      - drltq      # Deferred Revenue, Long-Term
+      - dlttq      # Long-Term Debt
+      - txditcq    # Deferred Taxes & Investment Tax Credit
+      - loq        # Other Liabilities (raw; used to compute loq_ex_dr)
+      - ltq        # Total Liabilities
+      # Equity
+      - cstkq      # Common Stock
+      - capsq      # Capital Surplus
+      - req        # Retained Earnings
+      - acomincq   # Accumulated Comprehensive Income Adjustment (AOCI component of req)
+      - tstkq      # Treasury Stock
+      - ceqq       # Common Equity
+      - pstkq      # Preferred Stock
+      - seqq       # Total Stockholders' Equity
+      - mibtq      # Noncontrolling Interests - Total (Balance Sheet)
+
+    # Income Statement items
+    income_statement:
+      - revtq      # Revenue
+      - cogsq      # Cost of Goods Sold
+      - xsgaq      # Selling, General & Administrative
+      - xrdq       # Research & Development
+      - dpq        # Depreciation & Amortization
+      - stkcoq     # Stock Compensation Expense
+      - oibdpq     # EBITDA
+      - oiadpq     # Operating Income (EBIT)
+      - xintq      # Interest Expense
+      - nopiq      # Non-Operating Income
+      - spiq       # Special Items
+      - piq        # Pre-Tax Income
+      - txtq       # Income Tax Expense
+      - miiq       # Noncontrolling Interest (Income)
+      - ibq        # Income Before Extraordinary Items
+      - xidoq      # Extraordinary Items & Discontinued Operations
+      - niq        # Net Income
+      - xoprq      # Total Operating Expenses
+
+    # Cash Flow items (YTD vars converted to quarterly by pipeline)
+    cash_flow:
+      - fopoq      # Other Operating CF Adjustments
+      - oancfq     # Operating Cash Flow
+      - capxq      # Capital Expenditures
+      - ivchq      # Investment Changes
+      - aqcq       # Acquisitions
+      - sivq       # Sale of Investments
+      - sppeq      # Sale of Property
+      - ivstchq    # Short-Term Investments - Change
+      - ivacoq     # Other Investing Activities
+      - ivncfq     # Investing Cash Flow
+      - sstkq      # Stock Issuance
+      - prstkcq    # Stock Repurchases
+      - dltisq     # Long-Term Debt Issuance
+      - dltrq      # Long-Term Debt Repayment
+      - dvq        # Dividends Paid
+      - dlcchq     # Changes in Current Debt
+      - txbcofq    # Excess Tax Benefit of Stock Options - Financing
+      - fiaoq      # Other Financing Activities
+      - fincfq     # Financing Cash Flow
+      - exreq      # Effect of Exchange Rate on Cash
+
+    # Computed items
+    computed:
+      - gpq        # Gross Profit = Revenue - COGS
+      - fcfq       # Free Cash Flow = Operating CF - CapEx
+      - wcapq      # Working Capital = actq - lctq
+      - aoq_ex_intanq  # Assets Other excl. Intangibles = aoq - intanq
+      - loq_ex_dr  # Liabilities Other excl. Deferred Revenue = loq - drltq
+      - xsgaq_ex_rd # SG&A excl. R&D = xsgaq - xrdq
+
+  # pf_avail - pf_full minus five features that are effectively absent in the
+  # training window (1970-1994) but present in val/test, which makes them
+  # untrained-but-predicted under no_cv:false and tiny-sample-fragile under
+  # no_cv:true. Dropped (train tuple counts, r9 build, account_id 0..81):
+  #   txbcofq  (0  train / 104k val / 393k test) - literally zero in train
+  #   stkcoq   (0  train / 133k val / 355k test) - literally zero in train
+  #   drcq     (7  train / 143k val / 375k test)
+  #   drltq    (12 train / 148k val / 389k test)
+  #   acomincq (19 train / 204k val / 412k test)
+  # Cascade: loq_ex_dr (= loq - drltq) is degenerate once drltq is gone, so it
+  # is dropped too; loq (raw) still carries all "other liabilities" in the
+  # liability_decomposition identity. Use with identities_pf_avail.json, which
+  # removes other_liabilities_decomposition and drops financing_cash_flow
+  # entirely: without txbcofq the identity would only be approximate (fiaoq is
+  # a raw Compustat item and does not absorb the dropped term), and the
+  # identity set is exact-identities-only by policy. Its eight features
+  # (sstkq, prstkcq, dltisq, dltrq, dlcchq, dvq, fiaoq, fincfq) remain in the
+  # feature set as unconstrained nodes. Result: 72 features (pf_full 78 - 6),
+  # 24 identities (pf_full 26 - 2).
+  pf_avail:
+    description: "pf_full minus five train-unavailable features (txbcofq, stkcoq, drcq, drltq, acomincq) and the now-degenerate loq_ex_dr. Pairs with identities_pf_avail.json."
+
+    # Balance Sheet items
+    balance_sheet:
+      # Assets
+      - cheq       # Cash & Cash Equivalents
+      - invtq      # Inventory
+      - rectq      # Accounts Receivable
+      - acoq       # Other Current Assets
+      - actq       # Current Assets - Total
+      - gdwlq      # Goodwill
+      - intanoq    # Other Intangibles
+      - intanq     # Intangible Assets - Total
+      - ppentq     # Property, Plant & Equipment, Net
+      - dpactq     # Accumulated Depreciation
+      - ppegtq     # Property, Plant & Equipment, Gross
+      - aoq        # Other Assets (raw; used to compute aoq_ex_intanq)
+      - ancq       # Non-Current Assets - Total
+      - atq        # Total Assets
+      # Liabilities
+      - apq        # Accounts Payable
+      - lcoq       # Other Current Liabilities
+      - dlcq       # Short-Term Debt
+      - txpq       # Income Taxes Payable
+      - lctq       # Current Liabilities - Total
+      - dlttq      # Long-Term Debt
+      - txditcq    # Deferred Taxes & Investment Tax Credit
+      - loq        # Other Liabilities (raw; full bucket, incl. deferred revenue)
+      - ltq        # Total Liabilities
+      # Equity
+      - cstkq      # Common Stock
+      - capsq      # Capital Surplus
+      - req        # Retained Earnings
+      - tstkq      # Treasury Stock
+      - ceqq       # Common Equity
+      - pstkq      # Preferred Stock
+      - seqq       # Total Stockholders' Equity
+      - mibtq      # Noncontrolling Interests - Total (Balance Sheet)
+
+    # Income Statement items
+    income_statement:
+      - revtq      # Revenue
+      - cogsq      # Cost of Goods Sold
+      - xsgaq      # Selling, General & Administrative
+      - xrdq       # Research & Development
+      - dpq        # Depreciation & Amortization
+      - oibdpq     # EBITDA
+      - oiadpq     # Operating Income (EBIT)
+      - xintq      # Interest Expense
+      - nopiq      # Non-Operating Income
+      - spiq       # Special Items
+      - piq        # Pre-Tax Income
+      - txtq       # Income Tax Expense
+      - miiq       # Noncontrolling Interest (Income)
+      - ibq        # Income Before Extraordinary Items
+      - xidoq      # Extraordinary Items & Discontinued Operations
+      - niq        # Net Income
+      - xoprq      # Total Operating Expenses
+
+    # Cash Flow items (YTD vars converted to quarterly by pipeline)
+    cash_flow:
+      - fopoq      # Other Operating CF Adjustments
+      - oancfq     # Operating Cash Flow
+      - capxq      # Capital Expenditures
+      - ivchq      # Investment Changes
+      - aqcq       # Acquisitions
+      - sivq       # Sale of Investments
+      - sppeq      # Sale of Property
+      - ivstchq    # Short-Term Investments - Change
+      - ivacoq     # Other Investing Activities
+      - ivncfq     # Investing Cash Flow
+      - sstkq      # Stock Issuance
+      - prstkcq    # Stock Repurchases
+      - dltisq     # Long-Term Debt Issuance
+      - dltrq      # Long-Term Debt Repayment
+      - dvq        # Dividends Paid
+      - dlcchq     # Changes in Current Debt
+      - fiaoq      # Other Financing Activities
+      - fincfq     # Financing Cash Flow
+      - exreq      # Effect of Exchange Rate on Cash
+
+    # Computed items
+    computed:
+      - gpq        # Gross Profit = Revenue - COGS
+      - fcfq       # Free Cash Flow = Operating CF - CapEx
+      - wcapq      # Working Capital = actq - lctq
+      - aoq_ex_intanq  # Assets Other excl. Intangibles = aoq - intanq
+      - xsgaq_ex_rd # SG&A excl. R&D = xsgaq - xrdq
+
+  # pf_full2 - same as pf_full but with preferred/common dividend split:
+  # dvq (total) replaced by dvpq (raw, preferred) + dvcq (computed = dvq - dvpq)
+  # Economically distinct: dvp is a fixed obligation, dvc is discretionary payout.
+  pf_full2:
+    description: "pf_full with preferred/common dividend split (dvq -> dvpq + dvcq)"
+
+    # Balance Sheet items
+    balance_sheet:
+      # Assets
+      - cheq       # Cash & Cash Equivalents
+      - invtq      # Inventory
+      - rectq      # Accounts Receivable
+      - acoq       # Other Current Assets
+      - actq       # Current Assets - Total
+      - gdwlq      # Goodwill
+      - intanoq    # Other Intangibles
+      - intanq     # Intangible Assets - Total
+      - ppentq     # Property, Plant & Equipment, Net
+      - dpactq     # Accumulated Depreciation
+      - ppegtq     # Property, Plant & Equipment, Gross
+      - aoq        # Other Assets (raw; used to compute aoq_ex_intanq)
+      - ancq       # Non-Current Assets - Total
+      - atq        # Total Assets
+      # Liabilities
+      - apq        # Accounts Payable
+      - lcoq       # Other Current Liabilities
+      - dlcq       # Short-Term Debt
+      - txpq       # Income Taxes Payable
+      - drcq       # Deferred Revenue - Current
+      - lctq       # Current Liabilities - Total
+      - drltq      # Deferred Revenue, Long-Term
+      - dlttq      # Long-Term Debt
+      - txditcq    # Deferred Taxes & Investment Tax Credit
+      - loq        # Other Liabilities (raw; used to compute loq_ex_dr)
+      - ltq        # Total Liabilities
+      # Equity
+      - cstkq      # Common Stock
+      - capsq      # Capital Surplus
+      - req        # Retained Earnings
+      - acomincq   # Accumulated Comprehensive Income Adjustment (AOCI component of req)
+      - tstkq      # Treasury Stock
+      - ceqq       # Common Equity
+      - pstkq      # Preferred Stock
+      - seqq       # Total Stockholders' Equity
+      - mibtq      # Noncontrolling Interests - Total (Balance Sheet)
+
+    # Income Statement items
+    income_statement:
+      - revtq      # Revenue
+      - cogsq      # Cost of Goods Sold
+      - xsgaq      # Selling, General & Administrative
+      - xrdq       # Research & Development
+      - dpq        # Depreciation & Amortization
+      - stkcoq     # Stock Compensation Expense
+      - oibdpq     # EBITDA
+      - oiadpq     # Operating Income (EBIT)
+      - xintq      # Interest Expense
+      - nopiq      # Non-Operating Income
+      - spiq       # Special Items
+      - piq        # Pre-Tax Income
+      - txtq       # Income Tax Expense
+      - miiq       # Noncontrolling Interest (Income)
+      - ibq        # Income Before Extraordinary Items
+      - xidoq      # Extraordinary Items & Discontinued Operations
+      - niq        # Net Income
+      - dvpq       # Preferred Dividends (fixed obligation, interest-like)
+      - xoprq      # Total Operating Expenses
+
+    # Cash Flow items (YTD vars converted to quarterly by pipeline)
+    cash_flow:
+      - fopoq      # Other Operating CF Adjustments
+      - oancfq     # Operating Cash Flow
+      - capxq      # Capital Expenditures
+      - ivchq      # Investment Changes
+      - aqcq       # Acquisitions
+      - sivq       # Sale of Investments
+      - sppeq      # Sale of Property
+      - ivstchq    # Short-Term Investments - Change
+      - ivacoq     # Other Investing Activities
+      - ivncfq     # Investing Cash Flow
+      - sstkq      # Stock Issuance
+      - prstkcq    # Stock Repurchases
+      - dltisq     # Long-Term Debt Issuance
+      - dltrq      # Long-Term Debt Repayment
+      - dlcchq     # Changes in Current Debt
+      - txbcofq    # Excess Tax Benefit of Stock Options - Financing
+      - fiaoq      # Other Financing Activities
+      - fincfq     # Financing Cash Flow
+      - exreq      # Effect of Exchange Rate on Cash
+
+    # Computed items
+    computed:
+      - gpq        # Gross Profit = Revenue - COGS
+      - fcfq       # Free Cash Flow = Operating CF - CapEx
+      - wcapq      # Working Capital = actq - lctq
+      - aoq_ex_intanq  # Assets Other excl. Intangibles = aoq - intanq
+      - loq_ex_dr  # Liabilities Other excl. Deferred Revenue = loq - drltq
+      - xsgaq_ex_rd # SG&A excl. R&D = xsgaq - xrdq
+      - dvcq       # Common Dividends = dvq - dvpq
+
+
+  # GLM feature set - the Geertsema, Lu, Ma (2026) chain-target set.
+  # Naming convention (repo-wide): "GLM" (the authors' initials) names the
+  # paper/dataset side -- this feature set, the 28-item chain-target set,
+  # configs/glm.yaml, and the benchmark. "GBM" names the *model* only (the
+  # chained gradient-boosting estimator, ChainedGBMModel / model_type
+  # chained_gbm). A feature set / dataset is never "GBM"; the model is never "GLM".
+  # 28 of 29 core items (only iva dropped - genuinely unavailable in quarterly Compustat;
+  # dvp available directly, dvc computed as dvq - dvp)
+  glm:
+    description: "GLM chain-target set per Geertsema, Lu, Ma (2026) (forecast by the chained GBM model)"
+
+    income_statement:
+      - revtq      # Sales
+      - cogsq      # COGS
+      - xsgaq      # SG&A (Other expenses)
+      - dpq        # Depreciation & Amortization
+      - xintq      # Interest Expense
+      - nopiq      # Non-Operating Income
+      - spiq       # Special Items
+      - txtq       # Income Tax Expense
+      - miiq       # Minority Interest (Income)
+      - xidoq      # Extraordinary, Discontinued, Other
+      - dvpq       # Preferred Dividends
+
+    balance_sheet:
+      - rectq      # Receivables
+      - invtq      # Inventory
+      - acoq       # Other Current Assets
+      - ppentq     # Plant, Property & Equipment
+      - intanq     # Intangible Assets
+      - aoq        # Other Long-Term Assets
+      - dlcq       # Current Debt (Short-Term)
+      - apq        # Accounts Payable
+      - txpq       # Income Tax Payable
+      - lcoq       # Other Current Liabilities
+      - dlttq      # Long-Term Debt
+      - txditcq    # Deferred Taxes & ITC
+      - loq        # Other Long-Term Liabilities
+      - mibtq      # Noncontrolling Interest (Balance Sheet)
+      - acomincq   # Other Comprehensive Income (oci)
+
+    cash_flow:
+      - sstkq      # Stock Issuance (needed for neiq)
+      - prstkcq    # Stock Repurchases (needed for neiq)
+      - dvq        # Total Dividends Paid (needed for dvcq)
+
+    computed:
+      - neiq       # Net Equity Issuance = sstkq - prstkcq
+      - dvcq       # Common Dividends = dvq - dvpq
+
+  # pf_full_glm - Union of the pf_full feature set and the glm chain-target set.
+  # Purpose: let the chained GBM model (or any model) consume the FULL
+  # pf_full feature matrix as *inputs* while restricting *targets* to the GLM
+  # 28-item sequential chain (set targets.all:false + targets.variables to the
+  # 28 chain items; see configs/glm.yaml). The union is resolved via include_sets,
+  # so get_feature_columns / collect_computed_columns pull every base AND computed
+  # column from both sets (recursion handled in config_utils / feature_engineering).
+  #
+  # Why the union rather than just pf_full: the GLM chain needs three targets that
+  # plain pf_full lacks -- neiq (= sstkq - prstkcq), dvpq (preferred divs), and
+  # dvcq (= dvq - dvpq). glm supplies all three (neiq/dvcq as computed, dvpq raw),
+  # so pf_full u glm covers all 28 chain items as features (validate_targets_in_
+  # features requires every target to be present in the feature set). The extra
+  # pf_full-only items (actq, lctq, ancq, ppegtq, dpactq, atq, ltq, seqq, niq,
+  # oiadpq, the cash-flow block, etc.) ride along as inputs; the chained GBM
+  # forecasts only its hardwired chain_order, so they are never used as targets.
+  pf_full_glm:
+    description: "Union of pf_full (features) and glm (chain targets). Use with targets.variables = the 28 GLM chain items so features=full pf_full u glm, targets=GLM chain only."
+    include_sets:
+      - pf_full
+      - glm
+
+# Metadata columns that should always be included
+metadata_columns:
+  - gvkey          # Company identifier
+  - datadate       # Date
+  - tic            # Ticker symbol
+  - conm           # Company name
+  - naics          # NAICS code (renamed from naicsh)
+  - fyearq         # Fiscal year
+  - fqtr           # Fiscal quarter
+
+scaling:
+  constant: 1e-3
+  # sum of constant and absolute value of all these is the preference
+  features_to_sum:
+    - ltq
+    - seqq
+  # fall back to one of these, trying each in sequence
+  fallbacks:
+    - atq
