@@ -334,7 +334,10 @@ def impute_local_xs(df: pd.DataFrame, n_factors: int = 10, gamma: float | None =
         rhs = (1.0 / L) * (Lo.T @ yo)
         F[i, :] = np.linalg.solve(lhs, rhs)
     imputed = F @ Lambda.T + means
-    out = df.to_numpy(dtype=float, na_value=np.nan)
+    # `data` already holds df.to_numpy(dtype=float, na_value=nan); copy it so the
+    # destination is writable (pandas>=3.0 Copy-on-Write returns read-only arrays
+    # from to_numpy) and fill only the originally-missing cells.
+    out = data.copy()
     miss = np.isnan(data)
     out[miss] = imputed[miss]
     return pd.DataFrame(out, index=df.index, columns=df.columns)
