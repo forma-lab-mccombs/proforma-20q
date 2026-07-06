@@ -473,14 +473,28 @@ def build_tabular(
 
     df = pd.concat(panels, ignore_index=True)
 
-    # -- row filtering --
+    # -- row filtering (research repo keep-mask: history -> scale -> target -> feature) --
     feat_cols = [c for c in df.columns if ("_level_" in c or "_yoy_" in c) and c != "scale_level_0"]
-    tgt_level_cols = [f"{t}_level_0" for t in target_items if f"{t}_level_0" in df.columns]
-    keep = df["scale_level_0"].notna() if "scale_level_0" in df.columns else pd.Series(True, index=df.index)
+    # Any recent level (0..recent-1), not just level_0 -- matches the research repo.
+    tgt_level_cols = [f"{t}_level_{lv}" for t in target_items for lv in range(recent)
+                      if f"{t}_level_{lv}" in df.columns]
+
+    # Condition 0: drop the earliest `min_lookback-1` GLOBAL quarters, which cannot
+    # carry enough history after feature engineering. On the canonical R13 build
+    # these quarters have no rows that survive the scale / all-NaN conditions, so
+    # this is a no-op there, but it matches the reference for other sample windows.
+    q_periods = pd.to_datetime(df[qcol]).dt.to_period("Q")
+    all_quarters = np.sort(q_periods.unique())
+    if len(all_quarters) > min_lb:
+        keep = q_periods.isin(set(all_quarters[min_lb - 1:])).to_numpy()
+    else:
+        keep = np.ones(len(df), dtype=bool)
+    if "scale_level_0" in df.columns:
+        keep &= df["scale_level_0"].notna().to_numpy()
     if tgt_level_cols:
-        keep &= ~df[tgt_level_cols].isna().all(axis=1)
+        keep &= ~df[tgt_level_cols].isna().all(axis=1).to_numpy()
     if feat_cols:
-        keep &= ~df[feat_cols].isna().all(axis=1)
+        keep &= ~df[feat_cols].isna().all(axis=1).to_numpy()
     df = df[keep].reset_index(drop=True)
 
     # -- present-in-q0 target masking --

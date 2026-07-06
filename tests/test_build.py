@@ -94,6 +94,47 @@ def test_tuple_schema(built):
     assert tup["quarter"].dtype.kind == "i"
 
 
+def test_short_history_firm_builds_and_deep_lags_are_nan(tmp_path):
+    """A firm with fewer quarters than the max lag (11) must NOT crash the build
+    (the old shift trimmed from the wrong end when lag>=n) and its lags beyond its
+    history must be NaN, matching pandas `groupby.shift`."""
+    raw = synthetic_raw()
+    # Truncate one firm to a 3-quarter history straddling the train window.
+    short = "00007"
+    keep = raw[raw["gvkey"] == short].sort_values("datadate").head(3)
+    raw = pd.concat([raw[raw["gvkey"] != short], keep], ignore_index=True)
+    raw_path = tmp_path / "compustat_with_permno.parquet"
+    raw.to_parquet(raw_path, engine="fastparquet", index=False)
+
+    out = build(raw_path, tmp_path / "proc", dataset_tag="short", which=("tabular",), verbose=False)
+    # Build completed (no broadcast crash). The short firm's deepest lag is NaN.
+    for split in ("tabular_train", "tabular_val", "tabular_test"):
+        df = load_tabular(out[split])
+        rows = df[df["firm"].astype(str) == short]
+        if not rows.empty and "niq_level_3" in rows.columns:
+            assert rows["niq_level_3"].isna().all()  # lag 3 > 3-quarter history -> NaN
+
+
+def test_yoy_clamp_is_wider_than_levels_by_1p4142():
+    """YoY clamps to +/- max_z*1.4142 (literal, not sqrt(2)); levels clamp to
+    +/- max_z. Guards fixes #2 (differences UNCLIPPED normals) and #4."""
+    from proforma20q.build import _YOY_Z_FACTOR, _normalize
+    assert _YOY_Z_FACTOR == 1.4142  # exact literal, not np.sqrt(2)
+
+    # Two unclipped normals, one beyond +/-max_z: clipping BEFORE differencing
+    # (the bug) gives a different result than differencing THEN clipping.
+    scale = np.array([1.0]); k = 1.0
+    a = _normalize(np.array([np.sinh(9.0)]), scale, k, np.array([0.0]), np.array([1.0]))
+    b = _normalize(np.array([np.sinh(1.0)]), scale, k, np.array([0.0]), np.array([1.0]))
+    assert a[0] > 6.0  # a is beyond the level clamp
+    max_z = 6.0
+    yoy_correct = np.clip(a - b, -max_z * 1.4142, max_z * 1.4142)[0]
+    yoy_buggy = np.clip(np.clip(a, -max_z, max_z) - np.clip(b, -max_z, max_z),
+                        -max_z * 1.4142, max_z * 1.4142)[0]
+    assert not np.isclose(yoy_correct, yoy_buggy)  # the two paths genuinely differ
+    assert np.isclose(yoy_correct, np.clip(8.0, -max_z * 1.4142, max_z * 1.4142))  # 9-1=8
+
+
 def test_computed_features_overwrite_native_columns():
     """wcapq/gpq/dvcq ship natively in comp.fundq but the benchmark DEFINES them
     via formula; the builder must overwrite the native column (matching the

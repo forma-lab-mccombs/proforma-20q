@@ -1,14 +1,16 @@
 """Checksums and vintage-drift reporting for built artifacts.
 
-Constraint (README / brief Sec 3.1): no WRDS-derived content is distributed --
-so we publish only *hashes* of the canonical build (one-way, non-revealing), and
-verify a user's rebuild against them.
+Constraint (README / brief Sec 3.1): no WRDS-derived *values* are distributed --
+so we publish only hashes plus coarse aggregate shape, and verify a user's
+rebuild against them.
 
 * ``md5`` of each artifact file -> exact bit-for-bit reproduction check.
 * per-column md5 of the regularized target/level columns (values rounded before
   hashing) -> a coarse *fraction of columns that diverge*, used by
   ``report-drift`` since a fresh WRDS pull is never bit-identical (Compustat is
   revised). It flags WHICH parts moved without revealing any value.
+* per-tabular ``n_rows`` / ``n_cols`` -> aggregate scalars (no firm-level data)
+  that let ``report-drift`` report the row-count delta of a diverging vintage.
 
 The bundled ``checksums.json`` is populated by the benchmark maintainer from the
 canonical build (``write_checksums``); users compare against it with
@@ -113,11 +115,16 @@ def write_checksums(
         except (json.JSONDecodeError, OSError):
             prior = {}
     core = compute_checksums(processed_dir, suffix)
+    resolved_dl = download_date if download_date is not None else prior.get("download_date")
+    resolved_tv = task_version or prior.get("task_version")
+    if resolved_dl is None or resolved_tv is None:
+        print(f"  Warning: writing checksums with download_date={resolved_dl!r}, "
+              f"task_version={resolved_tv!r} (no value passed and none in {out_path.name}).")
     record = {
         "_status": "populated",
-        "task_version": task_version or prior.get("task_version"),
+        "task_version": resolved_tv,
         "suffix": core["suffix"],
-        "download_date": download_date if download_date is not None else prior.get("download_date"),
+        "download_date": resolved_dl,
         "artifacts": core["artifacts"],
     }
     out_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
