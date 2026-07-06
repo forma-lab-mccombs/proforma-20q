@@ -149,11 +149,18 @@ def _computed_definitions() -> dict:
 
 
 def add_computed_features(df: pd.DataFrame, items: list[str]) -> pd.DataFrame:
-    """Add each computed item in ``items`` whose inputs are all present."""
+    """(Re)compute each computed item in ``items`` whose inputs are all present.
+
+    Matches the research repo's ``compute_derived_features``: the formula
+    OVERWRITES any like-named native Compustat column (e.g. ``wcapq``, ``gpq``,
+    ``dvcq`` all ship in ``comp.fundq`` but the benchmark defines them as
+    ``actq-lctq`` / ``revtq-cogsq`` / ``dvq-dvpq``). Skipping when the native
+    column is present would silently diverge from the paper's targets.
+    """
     df = df.copy()
     defs = _computed_definitions()
     for item in items:
-        if item not in defs or item in df.columns:
+        if item not in defs:
             continue
         req, fn = defs[item]
         if all(c in df.columns for c in req):
@@ -346,10 +353,23 @@ def impute_local_xs(df: pd.DataFrame, n_factors: int = 10, gamma: float | None =
 # ---------------------------------------------------------------------------
 # Tabular construction
 # ---------------------------------------------------------------------------
+# YoY clamp widens the |z| bound by sqrt(2); the research repo uses the literal
+# 1.4142 (not np.sqrt(2)), so match it for bit-exact clamp boundaries.
+_YOY_Z_FACTOR = 1.4142
+
+
+def _normalize(vals: np.ndarray, scale: np.ndarray, k: float, mu: np.ndarray,
+               sigma: np.ndarray, divide_by_scale: bool = True) -> np.ndarray:
+    """Regularized value BEFORE the |z| clamp: ``(asinh(k * v/scale) - mu)/sigma``.
+    YoY changes are the difference of two of these UNCLIPPED normals (matching the
+    research repo), so the clamp is applied once, after differencing."""
+    working = vals / scale if divide_by_scale else vals
+    return (np.arcsinh(working * k) - mu) / sigma
+
+
 def _regularize(vals: np.ndarray, scale: np.ndarray, k: float, mu: np.ndarray,
                 sigma: np.ndarray, max_abs_z: float, divide_by_scale: bool = True) -> np.ndarray:
-    working = vals / scale if divide_by_scale else vals
-    z = (np.arcsinh(working * k) - mu) / sigma
+    z = _normalize(vals, scale, k, mu, sigma, divide_by_scale=divide_by_scale)
     return np.clip(z, -max_abs_z, max_abs_z)
 
 
@@ -407,42 +427,74 @@ def build_tabular(
             sg = q_index.map(sig_lut.get(item, pd.Series(dtype=float))).to_numpy(float)
             return k_map.get(item, 1.0), mu, sg
 
-        # scale_level_0 (no divide-by-scale)
+        # scale_level_0 (no divide-by-scale); clamp + float32 as the research repo.
         if "scale" in k_map:
             ks, mus, sgs = k_map["scale"], q_index.map(mu_lut["scale"]).to_numpy(float), \
                 q_index.map(sig_lut["scale"]).to_numpy(float)
-            out["scale_level_0"] = _regularize(scale, scale, ks, mus, sgs, max_z, divide_by_scale=False)
+            out["scale_level_0"] = _regularize(
+                scale, scale, ks, mus, sgs, max_z, divide_by_scale=False).astype(np.float32)
 
         for item in present_items:
             k_i, mu_i, sg_i = stats_for(item)
             raw_vals = g[item].to_numpy(float)
-            # normalized levels at lags 0..(recent+yoy+4) needed for levels + yoy
+            # UNCLIPPED normalized levels at lags 0..(recent+yoy+4); levels clamp on
+            # output, YoY differences two UNCLIPPED normals THEN clamps (matching the
+            # research repo, which never feeds a pre-clamped level into the YoY diff).
             max_lag = max(recent - 1, yoy - 1 + 4)
             norm_by_lag = {}
             for lag in range(max_lag + 1):
-                shifted = np.concatenate([np.full(lag, np.nan), raw_vals[:n - lag]]) if lag else raw_vals
-                norm_by_lag[lag] = _regularize(shifted, scale, k_i, mu_i, sg_i, max_z)
+                # backward shift by `lag` (== pandas groupby.shift(lag)): NaN-fill
+                # the first `lag` rows, keep length n; all-NaN once lag >= n so a
+                # short-history firm never trims from the wrong end.
+                if lag == 0:
+                    shifted = raw_vals
+                else:
+                    shifted = np.full(n, np.nan)
+                    if lag < n:
+                        shifted[lag:] = raw_vals[:n - lag]
+                norm_by_lag[lag] = _normalize(shifted, scale, k_i, mu_i, sg_i)
             for lv in range(recent):
-                out[f"{item}_level_{lv}"] = norm_by_lag[lv]
+                out[f"{item}_level_{lv}"] = np.clip(norm_by_lag[lv], -max_z, max_z).astype(np.float32)
             for yk in range(yoy):
                 out[f"{item}_yoy_{yk}"] = np.clip(
-                    norm_by_lag[yk] - norm_by_lag[yk + 4], -max_z * np.sqrt(2), max_z * np.sqrt(2))
+                    norm_by_lag[yk] - norm_by_lag[yk + 4],
+                    -max_z * _YOY_Z_FACTOR, max_z * _YOY_Z_FACTOR).astype(np.float32)
             if item in target_items:
                 for lead in range(1, horizon + 1):
-                    fut = np.concatenate([raw_vals[lead:], np.full(lead, np.nan)])
-                    out[f"{item}_t{lead}"] = _regularize(fut, scale, k_i, mu_i, sg_i, max_z)
+                    # forward shift by `lead` (== pandas groupby.shift(-lead)):
+                    # NaN-fill the last `lead` rows, keep length n; all-NaN once
+                    # lead >= n.
+                    fut = np.full(n, np.nan)
+                    if lead < n:
+                        fut[:n - lead] = raw_vals[lead:]
+                    out[f"{item}_t{lead}"] = _regularize(
+                        fut, scale, k_i, mu_i, sg_i, max_z).astype(np.float32)
         panels.append(pd.DataFrame(out))
 
     df = pd.concat(panels, ignore_index=True)
 
-    # -- row filtering --
+    # -- row filtering (research repo keep-mask: history -> scale -> target -> feature) --
     feat_cols = [c for c in df.columns if ("_level_" in c or "_yoy_" in c) and c != "scale_level_0"]
-    tgt_level_cols = [f"{t}_level_0" for t in target_items if f"{t}_level_0" in df.columns]
-    keep = df["scale_level_0"].notna() if "scale_level_0" in df.columns else pd.Series(True, index=df.index)
+    # Any recent level (0..recent-1), not just level_0 -- matches the research repo.
+    tgt_level_cols = [f"{t}_level_{lv}" for t in target_items for lv in range(recent)
+                      if f"{t}_level_{lv}" in df.columns]
+
+    # Condition 0: drop the earliest `min_lookback-1` GLOBAL quarters, which cannot
+    # carry enough history after feature engineering. On the canonical R13 build
+    # these quarters have no rows that survive the scale / all-NaN conditions, so
+    # this is a no-op there, but it matches the reference for other sample windows.
+    q_periods = pd.to_datetime(df[qcol]).dt.to_period("Q")
+    all_quarters = np.sort(q_periods.unique())
+    if len(all_quarters) > min_lb:
+        keep = q_periods.isin(set(all_quarters[min_lb - 1:])).to_numpy()
+    else:
+        keep = np.ones(len(df), dtype=bool)
+    if "scale_level_0" in df.columns:
+        keep &= df["scale_level_0"].notna().to_numpy()
     if tgt_level_cols:
-        keep &= ~df[tgt_level_cols].isna().all(axis=1)
+        keep &= ~df[tgt_level_cols].isna().all(axis=1).to_numpy()
     if feat_cols:
-        keep &= ~df[feat_cols].isna().all(axis=1)
+        keep &= ~df[feat_cols].isna().all(axis=1).to_numpy()
     df = df[keep].reset_index(drop=True)
 
     # -- present-in-q0 target masking --
@@ -455,15 +507,21 @@ def build_tabular(
             tcols = [f"{t}_t{h}" for h in range(1, horizon + 1) if f"{t}_t{h}" in df.columns]
             df.loc[absent, tcols] = np.nan
 
-    # -- imputation (feature columns only, per quarter) --
-    if fe_cfg.get("imputation", {}).get("use") and feat_cols:
+    # -- imputation (per quarter) --
+    # The research repo imputes EVERY ``_level_`` / ``_yoy_`` column, which
+    # INCLUDES ``scale_level_0``. It is never itself NaN (kept rows require it),
+    # so it is never filled -- but as an extra characteristic in the factor matrix
+    # it shifts the loadings, hence the imputed values of every other cell. Match
+    # that column set exactly or imputed cells diverge.
+    impute_cols = [c for c in df.columns if "_level_" in c or "_yoy_" in c]
+    if fe_cfg.get("imputation", {}).get("use") and impute_cols:
         n_factors = int(fe_cfg["imputation"].get("n_factors", 10))
         parts = []
         for _q, gq in df.groupby(qcol, sort=False):
-            block = gq[feat_cols]
+            block = gq[impute_cols]
             if block.isna().any().any() and len(gq) >= n_factors + 1:
                 gq = gq.copy()
-                gq[feat_cols] = impute_local_xs(block, n_factors=n_factors).astype("float32")
+                gq[impute_cols] = impute_local_xs(block, n_factors=n_factors).astype("float32")
             parts.append(gq)
         df = pd.concat(parts).sort_index()
 
@@ -566,6 +624,7 @@ def build(
     *,
     dataset_tag: str | None = None,
     which=("tabular", "tuple"),
+    reg_stats=None,
     verbose: bool = True,
 ) -> dict[str, Path]:
     """Build the ProForma-20Q artifacts from the raw WRDS panel.
@@ -575,6 +634,14 @@ def build(
         out_dir: output directory for the processed artifacts.
         dataset_tag: dataset tag (default from ``task.yaml`` -> the R13 tag).
         which: which views to build (``"tabular"``, ``"tuple"``).
+        reg_stats: optional FROZEN regularization statistics to normalize against
+            instead of re-estimating them from this panel -- a path to a
+            ``regularization_stats__*.parquet`` or an in-memory frame with columns
+            ``quarter, mu, sigma, feature, k``. Pinning the published canonical
+            reg-stats makes the target/eval space independent of the builder's
+            Compustat vintage and environment (see README / issue #1), so the
+            paper's numbers reproduce even when a fresh vintage shifts the raw
+            features. Default (None) re-estimates on the train split.
         verbose: progress printing.
 
     Returns:
@@ -612,8 +679,17 @@ def build(
 
     target_items = [it for it in items if it in raw.columns]
     train_cutoff = pd.Timestamp(f"{splits['train_end_year']}-12-31")
-    log(f"Estimating regularization stats (train cutoff {train_cutoff.date()}) ...")
-    reg_stats = create_regularization_stats(raw, items, fe, train_cutoff)
+    if reg_stats is None:
+        log(f"Estimating regularization stats (train cutoff {train_cutoff.date()}) ...")
+        reg_stats = create_regularization_stats(raw, items, fe, train_cutoff)
+    else:
+        if not isinstance(reg_stats, pd.DataFrame):
+            log(f"Using FROZEN regularization stats from {reg_stats} ...")
+            reg_stats = pd.read_parquet(reg_stats, engine="fastparquet")
+        else:
+            log("Using FROZEN regularization stats (in-memory) ...")
+        reg_stats = reg_stats.copy()
+        reg_stats["quarter"] = pd.to_datetime(reg_stats["quarter"])
     reg_path = out_dir / f"regularization_stats__{suffix}.parquet"
     reg_stats.to_parquet(reg_path, engine="fastparquet", index=False)
 

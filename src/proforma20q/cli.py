@@ -48,8 +48,14 @@ def cmd_build(args) -> int:
         from .download import download
         raw_path = download(args.wrds_user, out_dir=raw_path.parent)
 
+    reg_stats = args.reg_stats
+    if reg_stats == "canonical":
+        from .config import canonical_reg_stats_path
+        reg_stats = canonical_reg_stats_path(args.tag or "r13_node_optionD_indfe_val8")
+
     which = tuple(w.strip() for w in args.which.split(",") if w.strip())
-    build(raw_path, out_dir=args.out, dataset_tag=args.tag, which=which)
+    build(raw_path, out_dir=args.out, dataset_tag=args.tag, which=which,
+          reg_stats=reg_stats)
 
     suffix = _default_suffix(args.tag)
     if args.report_drift:
@@ -177,6 +183,10 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--raw", default="data/raw/compustat_with_permno.parquet")
     b.add_argument("--out", default="data/processed")
     b.add_argument("--tag", default=None, help="dataset tag (default: canonical R13 tag)")
+    b.add_argument("--reg-stats", default=None,
+                   help="normalize against a FROZEN regularization_stats parquet instead of "
+                        "re-estimating (pins the target/eval space across Compustat vintages); "
+                        "pass 'canonical' to use the bundled published R13 reg-stats")
     b.add_argument("--which", default="tabular,tuple")
     b.add_argument("--report-drift", action="store_true",
                    help="quantify divergence from the canonical checksums instead of bit-verify")

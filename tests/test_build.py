@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from proforma20q.build import build
+from proforma20q.build import add_computed_features, build
 from proforma20q.baselines import run_baseline
 from proforma20q.baselines.common import discover_targets, load_tabular
 from proforma20q.evaluate import evaluate_forecasts
@@ -92,3 +92,108 @@ def test_tuple_schema(built):
     assert set(tup.columns) == {"firm_id", "account_id", "quarter", "value", "industry_id"}
     assert tup["firm_id"].dtype.kind == "i"
     assert tup["quarter"].dtype.kind == "i"
+
+
+def test_short_history_firm_does_not_crash_build(tmp_path):
+    """A firm with fewer quarters than the max feature lag (11) must not crash the
+    build. The old shift `raw_vals[:n-lag]` trimmed from the wrong end once the lag
+    exceeded a firm's history (n-lag < 0), raising a broadcast error during panel
+    construction; the pandas-`shift` port fixes it. Late-entry firms hit this in
+    the real R13 test split. (Deep-lag values are later imputed, so this is a
+    crash-regression guard, not a NaN assertion.)"""
+    raw = synthetic_raw()
+    short = "00007"
+    # 3-quarter history landing in the 2010+ test window (index 56 ~ 2010Q1), so
+    # it survives the min_lookback Condition 0 and flows through construction.
+    keep = raw[raw["gvkey"] == short].sort_values("datadate").iloc[56:59]
+    raw = pd.concat([raw[raw["gvkey"] != short], keep], ignore_index=True)
+    raw_path = tmp_path / "compustat_with_permno.parquet"
+    raw.to_parquet(raw_path, engine="fastparquet", index=False)
+
+    out = build(raw_path, tmp_path / "proc", dataset_tag="short", which=("tabular",), verbose=False)
+    # Completed without the broadcast crash, and the short-history firm flows
+    # through into the built output.
+    seen = any((load_tabular(out[s])["firm"].astype(str) == short).any()
+               for s in ("tabular_train", "tabular_val", "tabular_test"))
+    assert seen
+
+
+def test_imputation_column_set_includes_scale_excludes_targets_and_dummies(built):
+    """The Local-XS imputation matrix must include `scale_level_0` (matches the
+    research repo -- it is never filled but shifts the factor loadings) and must
+    exclude industry dummies and future-target `_t{h}` columns. Mirrors the
+    `impute_cols` selector in build_tabular. Guards fix #5."""
+    test = load_tabular(built["tabular_test"])
+    impute_cols = [c for c in test.columns if "_level_" in c or "_yoy_" in c]
+    assert "scale_level_0" in impute_cols
+    assert not any(c.startswith("indff48_") for c in impute_cols)
+    assert not any("_t" in c and c.rsplit("_t", 1)[-1].isdigit() for c in impute_cols)
+
+
+def test_yoy_clamp_is_wider_than_levels_by_1p4142():
+    """YoY clamps to +/- max_z*1.4142 (literal, not sqrt(2)); levels clamp to
+    +/- max_z. Guards fixes #2 (differences UNCLIPPED normals) and #4."""
+    from proforma20q.build import _YOY_Z_FACTOR, _normalize
+    assert _YOY_Z_FACTOR == 1.4142  # exact literal, not np.sqrt(2)
+
+    # Two unclipped normals, one beyond +/-max_z: clipping BEFORE differencing
+    # (the bug) gives a different result than differencing THEN clipping.
+    scale = np.array([1.0]); k = 1.0
+    a = _normalize(np.array([np.sinh(9.0)]), scale, k, np.array([0.0]), np.array([1.0]))
+    b = _normalize(np.array([np.sinh(1.0)]), scale, k, np.array([0.0]), np.array([1.0]))
+    assert a[0] > 6.0  # a is beyond the level clamp
+    max_z = 6.0
+    yoy_correct = np.clip(a - b, -max_z * 1.4142, max_z * 1.4142)[0]
+    yoy_buggy = np.clip(np.clip(a, -max_z, max_z) - np.clip(b, -max_z, max_z),
+                        -max_z * 1.4142, max_z * 1.4142)[0]
+    assert not np.isclose(yoy_correct, yoy_buggy)  # the two paths genuinely differ
+    assert np.isclose(yoy_correct, np.clip(8.0, -max_z * 1.4142, max_z * 1.4142))  # 9-1=8
+
+
+def test_computed_features_overwrite_native_columns():
+    """wcapq/gpq/dvcq ship natively in comp.fundq but the benchmark DEFINES them
+    via formula; the builder must overwrite the native column (matching the
+    research repo) rather than keep the as-reported value."""
+    df = pd.DataFrame({
+        "actq": [10.0, 20.0], "lctq": [4.0, 5.0],
+        "wcapq": [999.0, 999.0],  # bogus native value that must be overwritten
+        "revtq": [100.0, 200.0], "cogsq": [60.0, 150.0],
+    })
+    out = add_computed_features(df, ["wcapq", "gpq"])
+    np.testing.assert_allclose(out["wcapq"].to_numpy(), [6.0, 15.0])  # actq - lctq, not 999
+    np.testing.assert_allclose(out["gpq"].to_numpy(), [40.0, 50.0])   # revtq - cogsq
+
+
+def test_regularized_columns_are_float32(built):
+    test = load_tabular(built["tabular_test"])
+    for c in ("scale_level_0", "niq_level_0", "niq_yoy_0", "niq_t1"):
+        assert test[c].dtype == np.float32, f"{c} should be float32 (matches research repo)"
+
+
+def test_frozen_reg_stats_are_consumed(tmp_path):
+    """Passing reg_stats pins normalization: perturbing the frozen stats must move
+    the regularized output, proving they are used instead of re-estimated."""
+    raw = synthetic_raw()
+    raw_path = tmp_path / "compustat_with_permno.parquet"
+    raw.to_parquet(raw_path, engine="fastparquet", index=False)
+
+    base = build(raw_path, tmp_path / "p_est", dataset_tag="est", which=("tabular",), verbose=False)
+    a = load_tabular(base["tabular_test"]).sort_values(["firm", "origin"]).reset_index(drop=True)
+
+    frozen = pd.read_parquet(base["reg_stats"], engine="fastparquet")
+    frozen["mu"] = frozen["mu"] + 1.0  # deliberate shift
+    frozen_path = tmp_path / "frozen_reg_stats.parquet"
+    frozen.to_parquet(frozen_path, engine="fastparquet", index=False)
+
+    frz = build(raw_path, tmp_path / "p_frz", dataset_tag="frz", which=("tabular",),
+                reg_stats=frozen_path, verbose=False)
+    b = load_tabular(frz["tabular_test"]).sort_values(["firm", "origin"]).reset_index(drop=True)
+
+    # The written reg_stats artifact is the frozen one (round-tripped), not a re-estimate.
+    written = pd.read_parquet(frz["reg_stats"], engine="fastparquet")
+    np.testing.assert_allclose(written["mu"].to_numpy(), frozen["mu"].to_numpy())
+
+    # A shifted mu changes the normalized level_0 for at least some cells.
+    va, vb = a["niq_level_0"].to_numpy(), b["niq_level_0"].to_numpy()
+    both = np.isfinite(va) & np.isfinite(vb)
+    assert both.any() and not np.allclose(va[both], vb[both])

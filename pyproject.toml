@@ -59,7 +59,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-proforma20q = ["configs/*.yaml", "configs/*.json", "checksums.json"]
+proforma20q = ["configs/*.yaml", "configs/*.json", "checksums.json", "reference/*.parquet"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
