@@ -94,25 +94,40 @@ def test_tuple_schema(built):
     assert tup["quarter"].dtype.kind == "i"
 
 
-def test_short_history_firm_builds_and_deep_lags_are_nan(tmp_path):
-    """A firm with fewer quarters than the max lag (11) must NOT crash the build
-    (the old shift trimmed from the wrong end when lag>=n) and its lags beyond its
-    history must be NaN, matching pandas `groupby.shift`."""
+def test_short_history_firm_does_not_crash_build(tmp_path):
+    """A firm with fewer quarters than the max feature lag (11) must not crash the
+    build. The old shift `raw_vals[:n-lag]` trimmed from the wrong end once the lag
+    exceeded a firm's history (n-lag < 0), raising a broadcast error during panel
+    construction; the pandas-`shift` port fixes it. Late-entry firms hit this in
+    the real R13 test split. (Deep-lag values are later imputed, so this is a
+    crash-regression guard, not a NaN assertion.)"""
     raw = synthetic_raw()
-    # Truncate one firm to a 3-quarter history straddling the train window.
     short = "00007"
-    keep = raw[raw["gvkey"] == short].sort_values("datadate").head(3)
+    # 3-quarter history landing in the 2010+ test window (index 56 ~ 2010Q1), so
+    # it survives the min_lookback Condition 0 and flows through construction.
+    keep = raw[raw["gvkey"] == short].sort_values("datadate").iloc[56:59]
     raw = pd.concat([raw[raw["gvkey"] != short], keep], ignore_index=True)
     raw_path = tmp_path / "compustat_with_permno.parquet"
     raw.to_parquet(raw_path, engine="fastparquet", index=False)
 
     out = build(raw_path, tmp_path / "proc", dataset_tag="short", which=("tabular",), verbose=False)
-    # Build completed (no broadcast crash). The short firm's deepest lag is NaN.
-    for split in ("tabular_train", "tabular_val", "tabular_test"):
-        df = load_tabular(out[split])
-        rows = df[df["firm"].astype(str) == short]
-        if not rows.empty and "niq_level_3" in rows.columns:
-            assert rows["niq_level_3"].isna().all()  # lag 3 > 3-quarter history -> NaN
+    # Completed without the broadcast crash, and the short-history firm flows
+    # through into the built output.
+    seen = any((load_tabular(out[s])["firm"].astype(str) == short).any()
+               for s in ("tabular_train", "tabular_val", "tabular_test"))
+    assert seen
+
+
+def test_imputation_column_set_includes_scale_excludes_targets_and_dummies(built):
+    """The Local-XS imputation matrix must include `scale_level_0` (matches the
+    research repo -- it is never filled but shifts the factor loadings) and must
+    exclude industry dummies and future-target `_t{h}` columns. Mirrors the
+    `impute_cols` selector in build_tabular. Guards fix #5."""
+    test = load_tabular(built["tabular_test"])
+    impute_cols = [c for c in test.columns if "_level_" in c or "_yoy_" in c]
+    assert "scale_level_0" in impute_cols
+    assert not any(c.startswith("indff48_") for c in impute_cols)
+    assert not any("_t" in c and c.rsplit("_t", 1)[-1].isdigit() for c in impute_cols)
 
 
 def test_yoy_clamp_is_wider_than_levels_by_1p4142():
