@@ -114,14 +114,6 @@ def download(
             compustat_df = compustat_df[keep]
             print(f"Sector filter SIC [{rng['start']},{rng['end']}]: {n0} -> {len(compustat_df)}")
 
-        # -- CRSP monthly (for permco) --
-        print("Downloading CRSP monthly...")
-        db.raw_sql(f"""
-            SELECT date, permno, permco, shrout, ret, prc, vol
-            FROM crsp.msf
-            WHERE date BETWEEN '{start_date}' AND '{end_date}'
-        """)
-
         # -- CRSP-Compustat link table --
         print("Downloading CRSP-Compustat link table...")
         lt = "', '".join(_CCM_LINKTYPE)
@@ -137,6 +129,27 @@ def download(
 
     # -- Merge link -> permno, imposing link date ranges --
     print("Merging link table to attach permno...")
+    ccm = attach_permno(compustat_df, link_df)
+
+    out_path = out_dir / "compustat_with_permno.parquet"
+    ccm.to_parquet(out_path, index=False, engine="fastparquet")
+    print(f"Wrote {len(ccm):,} rows -> {out_path}")
+    return out_path
+
+
+def attach_permno(compustat_df: pd.DataFrame, link_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach CRSP ``permno`` / ``permco`` to the Compustat panel via the CCM link
+    table, imposing link date ranges.
+
+    Faithful port of the research repo's ``data_download.py`` Step 9: a left join
+    on ``gvkey`` followed by keeping only rows whose ``datadate`` falls inside the
+    link's ``[linkdt, linkenddt]`` window (missing endpoints -> open on that side,
+    so gvkeys with no link survive with NaN permno). Adds ``jdate`` (datadate
+    month-end) and ``year``; drops the link bookkeeping columns and renames
+    ``lpermno`` / ``lpermco`` -> ``permno`` / ``permco``.
+    """
+    compustat_df = compustat_df.copy()
+    link_df = link_df.copy()
     compustat_df["gvkey"] = compustat_df["gvkey"].astype(str)
     link_df["gvkey"] = link_df["gvkey"].astype(str)
     merged = pd.merge(compustat_df, link_df, on="gvkey", how="left")
@@ -148,8 +161,4 @@ def download(
     ccm = merged[(merged["datadate"] >= merged["linkdt"]) & (merged["datadate"] <= merged["linkenddt"])]
     ccm = ccm.drop(columns=["linktype", "linkdt", "linkenddt", "linkprim"])
     ccm = ccm.rename(columns={"lpermno": "permno", "lpermco": "permco"})
-
-    out_path = out_dir / "compustat_with_permno.parquet"
-    ccm.to_parquet(out_path, index=False, engine="fastparquet")
-    print(f"Wrote {len(ccm):,} rows -> {out_path}")
-    return out_path
+    return ccm

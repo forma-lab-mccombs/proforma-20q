@@ -90,12 +90,38 @@ def compute_checksums(processed_dir, suffix: str) -> dict:
     return record
 
 
-def write_checksums(processed_dir, suffix: str, out_path=CHECKSUMS_PATH) -> Path:
-    """(Maintainer) Populate ``checksums.json`` from the canonical build."""
-    record = compute_checksums(processed_dir, suffix)
-    record["_status"] = "populated"
-    Path(out_path).write_text(json.dumps(record, indent=2), encoding="utf-8")
-    return Path(out_path)
+def write_checksums(
+    processed_dir,
+    suffix: str,
+    out_path=CHECKSUMS_PATH,
+    *,
+    download_date: str | None = None,
+    task_version: str | None = None,
+) -> Path:
+    """(Maintainer) Populate ``checksums.json`` from the canonical build.
+
+    ``download_date`` (the WRDS pull date, ISO ``YYYY-MM-DD``) and
+    ``task_version`` are recorded alongside the hashes; when omitted they are
+    carried forward from the existing ``checksums.json`` so a re-run preserves
+    them. Only hashes are written -- never any WRDS-derived value.
+    """
+    out_path = Path(out_path)
+    prior: dict = {}
+    if out_path.exists():
+        try:
+            prior = json.loads(out_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            prior = {}
+    core = compute_checksums(processed_dir, suffix)
+    record = {
+        "_status": "populated",
+        "task_version": task_version or prior.get("task_version"),
+        "suffix": core["suffix"],
+        "download_date": download_date if download_date is not None else prior.get("download_date"),
+        "artifacts": core["artifacts"],
+    }
+    out_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return out_path
 
 
 def load_published_checksums(path=CHECKSUMS_PATH) -> dict:
