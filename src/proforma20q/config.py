@@ -14,6 +14,18 @@ from typing import Any
 import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
+REFERENCE_DIR = Path(__file__).resolve().parent / "reference"
+
+
+def canonical_reg_stats_path(tag: str = "r13_node_optionD_indfe_val8") -> Path:
+    """Path to the bundled canonical ``regularization_stats`` artifact.
+
+    Passing this (or ``--reg-stats canonical``) to the build pins the target /
+    eval normalization to the published R13 space, so the scored targets are
+    independent of the builder's Compustat vintage and BLAS/LAPACK stack.
+    """
+    fs = load_task_config()["benchmark"]["feature_set"]
+    return REFERENCE_DIR / f"regularization_stats__{fs}__{tag}.parquet"
 
 
 @lru_cache(maxsize=None)

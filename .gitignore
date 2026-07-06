@@ -10,6 +10,12 @@ results/
 # ...except the tiny SYNTHETIC example artifacts, which are safe to commit.
 !examples/*.parquet
 
+# ...and the published canonical regularization stats: aggregate per-(feature,
+# quarter) mu/sigma/k moments (NOT firm-level data), shipped so
+# `build --reg-stats canonical` can pin the eval space to the paper. Maintainer-
+# approved as safe to publish.
+!src/proforma20q/reference/*.parquet
+
 # WRDS credentials must never be committed.
 .pgpass
 *.pgpass
