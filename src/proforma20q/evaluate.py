@@ -204,6 +204,7 @@ def evaluate_forecasts(
     *,
     families: dict[str, tuple[str, float | None]] | None = None,
     allow_missing: bool = False,
+    sample_mask: pd.DataFrame | str | None = None,
     verbose: bool = True,
 ) -> EvalResult:
     """Score one or more forecasts against a wide truth frame on the all-models
@@ -223,6 +224,13 @@ def evaluate_forecasts(
             ``{stem}.nll.json`` sidecar.
         allow_missing: if a forecast fails to read/parse, score only the readable
             ones instead of raising (this re-bases the common sample!).
+        sample_mask: optional restriction of the scored cells to a fixed pooled
+            sample -- a frame (or parquet path) of ``firm, target, origin,
+            horizon`` keys (aliases accepted). Only cells whose key is in the mask
+            are scored; every metric is then computed on ``mask INTERSECT the
+            all-models common sample``. Reproduces a paper's pooled column (e.g.
+            the 327.2M-cell Full sample = the binding model's coverage) without
+            needing that model's forecast. Keys off-grid are ignored.
         verbose: print progress + coverage diagnostics.
 
     Returns:
@@ -234,6 +242,15 @@ def evaluate_forecasts(
     grid = TruthGrid(normalize_columns(truth))
     if not grid.targets:
         raise ValueError("truth frame has no scoreable {target}_t{h} / {target}_level_0 columns")
+
+    # Optional pooled-sample restriction: a dense cell bitmask over the grid.
+    # Two accepted forms: a keys frame/parquet (firm/target/origin/horizon --
+    # portable, matches by value) or a grid-aligned bit array / ``.npy``
+    # (``np.packbits`` of the canonical cell order -- compact, no firm ids, but
+    # requires the truth to be the canonical ``tabular_test``).
+    mask_bits = None
+    if sample_mask is not None:
+        mask_bits = _resolve_sample_mask(sample_mask, grid, log)
 
     # ---- Phase 1: residual arrays per model ----
     residuals: dict[str, dict] = {}
@@ -286,6 +303,8 @@ def evaluate_forecasts(
         common = act_fin & np.isfinite(base)
         for r in res_blocks.values():
             common &= np.isfinite(r)
+        if mask_bits is not None:
+            common &= mask_bits[sl]
         n_c = int(common.sum())
         n_common_total += n_c
         if n_c > 0:
@@ -416,6 +435,41 @@ def evaluate_forecasts(
 
     return EvalResult(metrics=metrics, n_common=n_common_total,
                       invariant_ok=invariant_ok, dropped_targets=dropped)
+
+
+def _resolve_sample_mask(sample_mask, grid: TruthGrid, log) -> np.ndarray:
+    """Return a length-``grid.n_cells`` bool mask from either a grid-aligned bit
+    array (ndarray or ``.npy`` path) or a keys frame/parquet."""
+    obj = sample_mask
+    if isinstance(obj, (str, Path)) and str(obj).endswith(".npy"):
+        obj = np.load(obj)
+    if isinstance(obj, np.ndarray):
+        n_cells = grid.n_cells
+        packed_len = (n_cells + 7) // 8
+        # Validate the source size BEFORE any truncation, so a mask built against a
+        # DIFFERENT (e.g. larger) grid errors loudly instead of being silently
+        # sliced to n_cells and applied to the wrong cells.
+        if obj.dtype == np.uint8 and obj.size == packed_len:
+            bits = np.unpackbits(obj)[:n_cells]           # canonical packbits form
+        elif obj.size == n_cells:
+            bits = obj                                    # already one entry per cell
+        else:
+            raise ValueError(
+                f"grid-aligned sample mask has {obj.size} entries but this truth's grid "
+                f"has {n_cells} cells (expected a length-{n_cells} bool array or its "
+                f"{packed_len}-byte np.packbits); build the mask against the canonical "
+                f"tabular_test (same firms/quarters/targets).")
+        bits = bits.astype(bool)
+        log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {n_cells:,} cells.")
+        return bits
+    # keys form
+    mdf = pd.read_parquet(obj) if isinstance(obj, (str, Path)) else obj
+    mrow_id, mvalid = grid.map_forecast_rows(normalize_columns(mdf))
+    bits = np.zeros(grid.n_cells, dtype=bool)
+    bits[mrow_id[mvalid]] = True
+    log(f"Sample mask (keys): {int(bits.sum()):,} grid cell(s) "
+        f"({int(mvalid.sum()):,} of {len(mdf):,} key rows on-grid).")
+    return bits
 
 
 def _iter_forecast_list(items):

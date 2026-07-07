@@ -30,6 +30,85 @@ def test_common_sample_invariant_and_size():
     assert res.n_common == n_cells
 
 
+def test_sample_mask_restricts_to_pooled_subset():
+    """--sample-mask restricts scoring to a fixed pooled cell set; the scored
+    sample is mask INTERSECT the all-models common sample."""
+    truth = synthetic_truth(n_firms=40, n_q=6, seed=5)
+    fc = forecast_from_truth(truth, noise=0.4, seed=3)
+    full = evaluate_forecasts({"m": fc}, truth, verbose=False)
+
+    # Mask = only the horizon-1 keys.
+    mask = fc[fc["horizon"] == 1][["firm", "target", "origin", "horizon"]]
+    masked = evaluate_forecasts({"m": fc}, truth, sample_mask=mask, verbose=False)
+
+    assert masked.n_common < full.n_common
+    bh = full.metrics["by_horizon"]
+    h1 = int(bh[bh["horizon"] == 1]["n_complete"].iloc[0])
+    assert masked.n_common == h1  # exactly the horizon-1 common cells
+    # only horizon 1 retains cells; the masked-out horizons drop to n_complete 0
+    mbh = masked.metrics["by_horizon"].set_index("horizon")["n_complete"]
+    assert mbh[1] == h1
+    assert (mbh.drop(1) == 0).all()
+
+
+def test_sample_mask_grid_aligned_bitmask_matches_keys(tmp_path):
+    """A grid-aligned bit array, its packbits form, an on-disk .npy, and the
+    equivalent keys mask all restrict to the same sample AND the same R²."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+    truth = synthetic_truth(n_firms=20, n_q=5, seed=6)
+    fc = forecast_from_truth(truth, noise=0.4, seed=1)
+    grid = TruthGrid(normalize_columns(truth))
+
+    bits = np.zeros(grid.n_cells, dtype=bool)
+    for t_id in range(len(grid.targets)):
+        start = (t_id * grid.n_h + 0) * grid.n_wide  # h_idx 0 == smallest horizon (1)
+        bits[start:start + grid.n_wide] = True
+
+    keys = fc[fc["horizon"] == 1][["firm", "target", "origin", "horizon"]]
+    npy = tmp_path / "mask.npy"
+    np.save(npy, np.packbits(bits))
+
+    def run(m):
+        r = evaluate_forecasts({"m": fc}, truth, sample_mask=m, verbose=False)
+        return r.n_common, float(r.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0])
+
+    keys_res = run(keys)
+    for m in (bits, np.packbits(bits), str(npy)):
+        n, r2 = run(m)
+        assert n == keys_res[0]
+        assert np.isclose(r2, keys_res[1], equal_nan=True)
+
+
+def test_sample_mask_wrong_grid_size_errors():
+    """A grid-aligned mask sized for a different grid is rejected, not silently
+    truncated and misapplied."""
+    truth = synthetic_truth(n_firms=10, n_q=4, seed=2)
+    fc = forecast_from_truth(truth, noise=0.5, seed=1)
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+    n_cells = TruthGrid(normalize_columns(truth)).n_cells
+    for bad in (np.ones(n_cells + 100, dtype=bool),          # oversized bool
+                np.ones(n_cells - 5, dtype=bool),            # undersized bool
+                np.packbits(np.ones(n_cells + 800, dtype=bool))):  # packbits of wrong grid
+        with pytest.raises(ValueError, match="grid"):
+            evaluate_forecasts({"m": fc}, truth, sample_mask=bad, verbose=False)
+
+
+def test_sample_mask_off_grid_keys_ignored():
+    """Keys not on the truth grid are dropped from the mask, not errored: a mask of
+    (all real keys + some off-grid firms) scores the same as no mask at all."""
+    import pandas as pd
+    truth = synthetic_truth(n_firms=15, n_q=4, seed=8)
+    fc = forecast_from_truth(truth, noise=0.5, seed=2)
+    mask = fc[["firm", "target", "origin", "horizon"]].copy()
+    bogus = mask.head(3).copy()
+    bogus["firm"] = "999999"  # numeric but not among the 15 truth firms -> off-grid
+    mask = pd.concat([mask, bogus], ignore_index=True)
+    res = evaluate_forecasts({"m": fc}, truth, sample_mask=mask, verbose=False)
+    assert res.n_common == evaluate_forecasts({"m": fc}, truth, verbose=False).n_common
+
+
 def test_gaussian_probabilistic_metrics():
     truth = synthetic_truth(n_firms=60, n_q=8, seed=3)
     fc = forecast_from_truth(truth, noise=1.0, sigma=1.0, seed=4)

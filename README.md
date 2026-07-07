@@ -164,6 +164,50 @@ naive / fade / ElasticNet numbers.
 
 ---
 
+## Reproducing the paper's pooled tables
+
+`evaluate` scores on the **all-submitted-models common sample** (a cell counts
+only if every model you pass predicts it finitely). The paper's headline table
+instead scores each column on a **fixed pooled sample** — the common sample of a
+specific set of models, so that adding a new entrant never moves a published
+number. Its primary column is the **Full sample: 327,244,429 cells**.
+
+`--sample-mask` reproduces that. Pass a mask of the pooled cells and every metric
+is computed on `mask ∩ your models' common sample`:
+
+```bash
+proforma20q evaluate my_forecasts.parquet --against baselines \
+    --sample-mask full_sample_mask.parquet
+```
+
+The mask is a keys table (`firm, target, origin, horizon`) or a compact
+grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no
+firm identifiers). Because the reference model's coverage is the binding
+constraint, the Full mask is exactly *its finite-prediction cells ∩ truth*;
+`scripts/build_full_sample_mask.py` rebuilds and verifies it (`--expect
+327244429`). The published mask ships as a release asset (66–136 MB); its md5 and
+provenance are pinned in
+[`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)
+(the grid-aligned bitmask is `a36008d8…`), so a download can be integrity-checked.
+
+Restricted to the Full mask, the shipped baselines reproduce the paper's Panel A
+Full column **to the digit** (all on the identical 327,244,429-cell sample):
+
+| baseline | R² (this repo) | R² (paper) |
+|---|:--:|:--:|
+| naive | −0.0412 | −0.041 |
+| fade / AR(1) | 0.1827 | 0.183 |
+| ElasticNet | 0.2585 | 0.258 |
+
+**Sub-sample analysis.** The same flag scores any narrower pool — e.g. a mask
+intersected with a model that only covers 25 targets (the paper's GBM column,
+109 M cells) or a fixed-budget origin subsample (the LLM column, 2.15 M cells).
+Those masks are *not* part of standard scoring; they are examples of the
+sub-sample analyses the package enables for entrants with structural or budgetary
+coverage limits.
+
+---
+
 ## Task definition = single source of truth
 
 Everything that defines the benchmark is in
