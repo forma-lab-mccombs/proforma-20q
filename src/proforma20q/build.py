@@ -489,12 +489,15 @@ def build_tabular(
         keep = q_periods.isin(set(all_quarters[min_lb - 1:])).to_numpy()
     else:
         keep = np.ones(len(df), dtype=bool)
+    # NB: rebind (``keep = keep & ...``) rather than in-place ``&=``. Under pandas
+    # 3.x Copy-on-Write, ``Series.to_numpy()`` returns a read-only array, so an
+    # in-place update of ``keep`` raises "output array is read-only".
     if "scale_level_0" in df.columns:
-        keep &= df["scale_level_0"].notna().to_numpy()
+        keep = keep & df["scale_level_0"].notna().to_numpy()
     if tgt_level_cols:
-        keep &= ~df[tgt_level_cols].isna().all(axis=1).to_numpy()
+        keep = keep & ~df[tgt_level_cols].isna().all(axis=1).to_numpy()
     if feat_cols:
-        keep &= ~df[feat_cols].isna().all(axis=1).to_numpy()
+        keep = keep & ~df[feat_cols].isna().all(axis=1).to_numpy()
     df = df[keep].reset_index(drop=True)
 
     # -- present-in-q0 target masking --
