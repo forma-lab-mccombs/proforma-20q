@@ -1,0 +1,12 @@
+{
+  "artifact": "full_sample_mask_bits.npy",
+  "form": "np.packbits of the canonical grid cell order (grid-aligned, no firm identifiers)",
+  "suffix": "pf_full__r13_node_optionD_indfe_val8",
+  "n_cells": 327244429,
+  "grid_cells": 550620720,
+  "md5": "a36008d8dbfeb56992f1049fd543d781",
+  "derivation": "forma_fgrid ensemble finite predictions INTERSECT truth-finite (target actual AND origin baseline present). forma_fgrid is the binding coverage constraint of the 8-model Full pool, so this equals the full pooled join.",
+  "reproduces": "ICAIF'26 Table 1 Full column (327,244,429 cells)",
+  "build_command": "python scripts/build_full_sample_mask.py --forecast <forma_fgrid ensemble parquet> --truth data/processed/tabular_test__pf_full__r13_node_optionD_indfe_val8.parquet --expect 327244429",
+  "verify": "python -c \"import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())\" full_sample_mask_bits.npy"
+}

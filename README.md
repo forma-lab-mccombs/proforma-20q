@@ -185,8 +185,10 @@ grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no
 firm identifiers). Because the reference model's coverage is the binding
 constraint, the Full mask is exactly *its finite-prediction cells ∩ truth*;
 `scripts/build_full_sample_mask.py` rebuilds and verifies it (`--expect
-327244429`). The published mask ships as a release asset (66–136 MB), with its
-md5 in the repo.
+327244429`). The published mask ships as a release asset (66–136 MB); its md5 and
+provenance are pinned in
+[`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)
+(the grid-aligned bitmask is `a36008d8…`), so a download can be integrity-checked.
 
 Restricted to the Full mask, the shipped baselines reproduce the paper's Panel A
 Full column **to the digit** (all on the identical 327,244,429-cell sample):

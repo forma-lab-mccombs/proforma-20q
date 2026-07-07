@@ -51,9 +51,9 @@ def test_sample_mask_restricts_to_pooled_subset():
     assert (mbh.drop(1) == 0).all()
 
 
-def test_sample_mask_grid_aligned_bitmask_matches_keys():
-    """A grid-aligned bit array (and its packbits form) restricts identically to
-    the equivalent keys mask."""
+def test_sample_mask_grid_aligned_bitmask_matches_keys(tmp_path):
+    """A grid-aligned bit array, its packbits form, an on-disk .npy, and the
+    equivalent keys mask all restrict to the same sample AND the same R²."""
     from proforma20q.truth_grid import TruthGrid
     from proforma20q.schema import normalize_columns
     truth = synthetic_truth(n_firms=20, n_q=5, seed=6)
@@ -66,10 +66,33 @@ def test_sample_mask_grid_aligned_bitmask_matches_keys():
         bits[start:start + grid.n_wide] = True
 
     keys = fc[fc["horizon"] == 1][["firm", "target", "origin", "horizon"]]
-    n_keys = evaluate_forecasts({"m": fc}, truth, sample_mask=keys, verbose=False).n_common
-    n_bits = evaluate_forecasts({"m": fc}, truth, sample_mask=bits, verbose=False).n_common
-    n_packed = evaluate_forecasts({"m": fc}, truth, sample_mask=np.packbits(bits), verbose=False).n_common
-    assert n_bits == n_keys == n_packed
+    npy = tmp_path / "mask.npy"
+    np.save(npy, np.packbits(bits))
+
+    def run(m):
+        r = evaluate_forecasts({"m": fc}, truth, sample_mask=m, verbose=False)
+        return r.n_common, float(r.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0])
+
+    keys_res = run(keys)
+    for m in (bits, np.packbits(bits), str(npy)):
+        n, r2 = run(m)
+        assert n == keys_res[0]
+        assert np.isclose(r2, keys_res[1], equal_nan=True)
+
+
+def test_sample_mask_wrong_grid_size_errors():
+    """A grid-aligned mask sized for a different grid is rejected, not silently
+    truncated and misapplied."""
+    truth = synthetic_truth(n_firms=10, n_q=4, seed=2)
+    fc = forecast_from_truth(truth, noise=0.5, seed=1)
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+    n_cells = TruthGrid(normalize_columns(truth)).n_cells
+    for bad in (np.ones(n_cells + 100, dtype=bool),          # oversized bool
+                np.ones(n_cells - 5, dtype=bool),            # undersized bool
+                np.packbits(np.ones(n_cells + 800, dtype=bool))):  # packbits of wrong grid
+        with pytest.raises(ValueError, match="grid"):
+            evaluate_forecasts({"m": fc}, truth, sample_mask=bad, verbose=False)
 
 
 def test_sample_mask_off_grid_keys_ignored():

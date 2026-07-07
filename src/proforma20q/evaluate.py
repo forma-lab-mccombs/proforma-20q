@@ -444,16 +444,23 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log) -> np.ndarray:
     if isinstance(obj, (str, Path)) and str(obj).endswith(".npy"):
         obj = np.load(obj)
     if isinstance(obj, np.ndarray):
-        bits = obj
-        if bits.dtype == np.uint8 and bits.size != grid.n_cells:
-            bits = np.unpackbits(bits)  # packed form
-        bits = bits[:grid.n_cells].astype(bool)
-        if bits.size != grid.n_cells:
+        n_cells = grid.n_cells
+        packed_len = (n_cells + 7) // 8
+        # Validate the source size BEFORE any truncation, so a mask built against a
+        # DIFFERENT (e.g. larger) grid errors loudly instead of being silently
+        # sliced to n_cells and applied to the wrong cells.
+        if obj.dtype == np.uint8 and obj.size == packed_len:
+            bits = np.unpackbits(obj)[:n_cells]           # canonical packbits form
+        elif obj.size == n_cells:
+            bits = obj                                    # already one entry per cell
+        else:
             raise ValueError(
-                f"grid-aligned sample mask has {bits.size} cells but this truth's grid "
-                f"has {grid.n_cells}; the mask must be built against the canonical "
+                f"grid-aligned sample mask has {obj.size} entries but this truth's grid "
+                f"has {n_cells} cells (expected a length-{n_cells} bool array or its "
+                f"{packed_len}-byte np.packbits); build the mask against the canonical "
                 f"tabular_test (same firms/quarters/targets).")
-        log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {grid.n_cells:,} cells.")
+        bits = bits.astype(bool)
+        log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {n_cells:,} cells.")
         return bits
     # keys form
     mdf = pd.read_parquet(obj) if isinstance(obj, (str, Path)) else obj

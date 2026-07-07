@@ -54,12 +54,26 @@ def build_mask(forecast_path, truth_path, *, batch_size: int = 8_000_000, verbos
 
     covered = np.zeros(grid.n_cells, dtype=bool)
     pf = pq.ParquetFile(forecast_path)
-    cols = ["firm_id", "target", "quarter", "forecast_horizon", "prediction"]
+    names = set(pf.schema_arrow.names)
+
+    def pick(*opts):
+        return next(c for c in opts if c in names)
+
+    # accept the internal Forma schema (firm_id/quarter/forecast_horizon) or the
+    # submission schema (firm/origin/horizon); normalize_columns maps either.
+    cols = [pick("firm_id", "firm"), "target", pick("quarter", "origin"),
+            pick("forecast_horizon", "horizon"), "prediction"]
     for batch in pf.iter_batches(batch_size=batch_size, columns=cols):
         df = normalize_columns(batch.to_pandas())
         pred = pd.to_numeric(df["prediction"], errors="coerce").to_numpy(np.float64)
         row_id, valid = grid.map_forecast_rows(df)
         ok = valid & np.isfinite(pred)
+        # OR over all finite rows for a key. The scoring path (build_residual) keeps
+        # the FIRST occurrence of a duplicate key, so a mask cell could in principle
+        # be more generous than scoring if a key's first row were NaN and a later
+        # one finite; evaluate then intersects the mask with the models' common
+        # sample, so an over-generous cell is dropped, never wrongly scored. The
+        # `--expect` count assertion is the guard that no such duplicate skews it.
         covered[row_id[ok]] = True
 
     mask = covered & truth_finite
