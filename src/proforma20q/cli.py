@@ -102,7 +102,8 @@ def cmd_evaluate(args) -> int:
         print("No forecast files to evaluate.", file=sys.stderr)
         return 2
 
-    res = evaluate_forecasts(forecasts, truth, allow_missing=args.allow_missing)
+    res = evaluate_forecasts(forecasts, truth, allow_missing=args.allow_missing,
+                             sample_mask=args.sample_mask)
     print("\n=== Leaderboard (global pool) ===")
     print(res.leaderboard(args.sort).to_string(index=False))
     if args.out:
@@ -211,6 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default=None, help="write per-level metric CSVs here")
     e.add_argument("--sort", default="r2", help="leaderboard sort metric")
     e.add_argument("--allow-missing", action="store_true")
+    e.add_argument("--sample-mask", default=None,
+                   help="restrict scoring to a pooled-sample mask (parquet of firm/target/"
+                        "origin/horizon keys), e.g. the paper's Full 327.2M-cell sample")
     e.set_defaults(func=cmd_evaluate)
 
     v = sub.add_parser("validate", help="check a forecast file against the submission schema")
