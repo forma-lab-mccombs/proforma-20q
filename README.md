@@ -47,7 +47,7 @@ pip install proforma-20q[wrds]      # also the WRDS client, for the data build
 or from source:
 
 ```bash
-git clone https://github.com/forma-lab-mccombs/proforma-20q
+git clone https://github.com/ANONYMIZED/proforma-20q   # repository URL (de-anonymized on release)
 cd proforma-20q
 pip install -e .[wrds,dev]
 ```
@@ -185,10 +185,12 @@ grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no
 firm identifiers). Because the reference model's coverage is the binding
 constraint, the Full mask is exactly *its finite-prediction cells ∩ truth*;
 `scripts/build_full_sample_mask.py` rebuilds and verifies it (`--expect
-327244429`). The published mask ships as a release asset (66–136 MB); its md5 and
-provenance are pinned in
+327244429`) offline from the Forma forecast — so you can produce the mask yourself
+without any download. On publication the prebuilt mask is also released as an
+archival asset (66–136 MB); its md5 and provenance are pinned now in
 [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)
 (the grid-aligned bitmask is `a36008d8…`), so a download can be integrity-checked.
+See [Data & artifacts](#data--artifacts) for release status.
 
 Restricted to the Full mask, the shipped baselines reproduce the paper's Panel A
 Full column **to the digit** (all on the identical 327,244,429-cell sample):
@@ -205,6 +207,33 @@ intersected with a model that only covers 25 targets (the paper's GBM column,
 Those masks are *not* part of standard scoring; they are examples of the
 sub-sample analyses the package enables for entrants with structural or budgetary
 coverage limits.
+
+---
+
+## Data & artifacts
+
+**No WRDS-derived data is distributed** — you rebuild the tabular/tuple artifacts
+yourself from your own Compustat licence (`proforma20q build`).
+
+> **⚠ Not yet available (placeholder).** The two supporting artifacts below are
+> published to an archival record (DOI assigned **on publication**); no record
+> exists yet. Until then `scripts/download_artifacts.py` is a placeholder that
+> **will not run** (its `ZENODO_RECORD` is unset and the script errors out). The
+> md5s are final, so it goes live the moment the record id is filled in.
+
+When released, these hold only **model outputs and a coverage mask — no firm-level
+values**:
+
+| artifact | size | md5 | for |
+|---|---|---|---|
+| `forma_fgrid__pf_full__test__predictions.parquet` | ~4.2 GB | `c4f0f721…` | canonical R13 **Forma** 5-seed mixture forecast (point track). Pool your model against it to reproduce **Panels A / B**, or rebuild the mask from it. |
+| `full_sample_mask_bits.npy` | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned, no firm ids); pass to `evaluate --sample-mask`. |
+
+The mask does **not** depend on that download: it is rebuilt offline from the
+Forma forecast via `scripts/build_full_sample_mask.py` and checked against the
+pinned md5. This release covers the **point track (Panels A and B)**; the density
+track (Panel C — exact mixture NLL/CRPS) needs the five per-seed forecasts and is
+out of scope here.
 
 ---
 
