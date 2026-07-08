@@ -96,6 +96,8 @@ class TruthGrid:
 
         targets, per_target = discover_targets(truth_df)
         self.targets = targets
+        # Unique index for warning-free code lookups (see _canon_codes).
+        self._targets_idx = pd.Index(targets)
         self.target_to_id = {t: i for i, t in enumerate(targets)}
         horizons = sorted({h for t in targets for _c, h in per_target[t]})
         self.horizons = horizons
@@ -128,7 +130,11 @@ class TruthGrid:
         """Categorical codes of ``canon(values)`` against ``categories``, applying
         the (per-element-expensive) canonicalization only to the unique values."""
         codes, uniq = pd.factorize(values)
-        mapped = pd.Categorical(canon(pd.Series(uniq)), categories=categories).codes.astype(np.int64)
+        # Index.get_indexer maps each value to its position in ``categories`` (-1
+        # when absent), matching Categorical.codes but without the pandas 3.x
+        # "values not in categories" deprecation warning (off-grid keys are
+        # expected here). Requires ``categories`` to be unique, which it is.
+        mapped = categories.get_indexer(canon(pd.Series(uniq))).astype(np.int64)
         out = np.full(len(codes), -1, dtype=np.int64)
         pos = codes >= 0
         out[pos] = mapped[codes[pos]]
@@ -143,7 +149,7 @@ class TruthGrid:
         """
         fcodes = self._canon_codes(chunk[FIRM_COL], canon_firm_ids, self._firm_uniques)
         qcodes = self._canon_codes(chunk[ORIGIN_COL], canon_origin, self._q_uniques)
-        tcodes = pd.Categorical(chunk[TARGET_COL], categories=self.targets).codes.astype(np.int64)
+        tcodes = self._targets_idx.get_indexer(chunk[TARGET_COL]).astype(np.int64)
         h = pd.to_numeric(chunk[HORIZON_COL], errors="coerce").to_numpy(np.float64)
         h_int = np.where(np.isfinite(h), h, -1).astype(np.int64)
         h_in_range = (h_int >= 0) & (h_int < len(self._h_lut))
