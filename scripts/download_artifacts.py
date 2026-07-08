@@ -1,5 +1,13 @@
 """Download + md5-verify the released ProForma-20Q data artifacts from Zenodo.
 
+    ============================ NOT YET ACTIVE ============================
+    PLACEHOLDER. The artifacts are published to an archival record (Zenodo)
+    only on paper publication. Until then no record exists, ``ZENODO_RECORD``
+    below is an UNFILLED placeholder, and this script intentionally refuses to
+    run -- there is nothing to download yet. The md5s ARE final, so this script
+    becomes live the moment the record id is filled in at release.
+    =======================================================================
+
 Nothing WRDS-derived is released. The public artifacts are model OUTPUTS and a
 coverage mask (no firm-level Compustat values):
 
