@@ -4,16 +4,25 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import hashlib
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from proforma20q.evaluate import evaluate_forecasts
 from fixtures import forecast_from_truth, synthetic_truth
 
+
+def _load_script(name):
+    spec = importlib.util.spec_from_file_location(name.replace(".", "_"), _ROOT / "scripts" / name)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 _ROOT = Path(__file__).resolve().parent.parent
-_spec = importlib.util.spec_from_file_location("bmask", _ROOT / "scripts" / "build_full_sample_mask.py")
-bmask = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bmask)
+bmask = _load_script("build_full_sample_mask.py")
 
 
 def _write_forecast(fc, path):
@@ -67,3 +76,16 @@ def test_mask_to_keys_addressing_matches_grid(tmp_path):
     assert int(row["horizon"]) == grid.horizons[h_idx]
     assert str(row["firm"]) == str(tn["firm"].iloc[wide_row])
     assert pd.Timestamp(row["origin"]) == pd.Timestamp(tn["origin"].iloc[wide_row])
+
+
+def test_download_artifacts_md5_guard_and_pins(tmp_path):
+    dl = _load_script("download_artifacts.py")
+    # md5sum matches hashlib
+    p = tmp_path / "x.bin"
+    p.write_bytes(b"proforma-20q")
+    assert dl.md5sum(p) == hashlib.md5(b"proforma-20q").hexdigest()
+    # artifact md5s are pinned (only the Zenodo record id is a placeholder)
+    assert all(not v.startswith("REPLACE_WITH") for v in dl.ARTIFACTS.values())
+    # the release-placeholder guard fires until ZENODO_RECORD is set
+    with pytest.raises(SystemExit):
+        dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
