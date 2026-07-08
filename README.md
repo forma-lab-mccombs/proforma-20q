@@ -47,7 +47,7 @@ pip install proforma-20q[wrds]      # also the WRDS client, for the data build
 or from source:
 
 ```bash
-git clone https://github.com/forma-lab-mccombs/proforma-20q
+git clone https://github.com/ANONYMIZED/proforma-20q   # repository URL (de-anonymized on release)
 cd proforma-20q
 pip install -e .[wrds,dev]
 ```
@@ -211,25 +211,23 @@ coverage limits.
 ## Data & artifacts
 
 **No WRDS-derived data is distributed** — you rebuild the tabular/tuple artifacts
-yourself from your own Compustat licence (`proforma20q build`). The public release
-(Zenodo, DOI [`10.5281/zenodo.XXXXXXX`](https://doi.org/10.5281/zenodo.XXXXXXX))
-holds only **model outputs and a coverage mask** — no firm-level values:
+yourself from your own Compustat licence (`proforma20q build`). Two supporting
+artifacts (**model outputs and a coverage mask — no firm-level values**) are
+released on publication via an archival record (DOI assigned on release):
 
 | artifact | size | md5 | for |
 |---|---|---|---|
-| `forma_fgrid__pf_full__test__predictions.parquet` | ~4.2 GB | `c4f0f721…` | canonical R13 **Forma** 5-seed mixture forecast (point track). Pool your model against it to reproduce **Panel A / B**, or rebuild the mask from it. |
+| `forma_fgrid__pf_full__test__predictions.parquet` | ~4.2 GB | `c4f0f721…` | canonical R13 **Forma** 5-seed mixture forecast (point track). Pool your model against it to reproduce **Panels A / B**, or rebuild the mask from it. |
 | `full_sample_mask_bits.npy` | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned, no firm ids); pass to `evaluate --sample-mask`. |
 
-```bash
-# set ZENODO_RECORD in the script (the number in the DOI), then:
-python scripts/download_artifacts.py --out data/artifacts     # downloads + md5-verifies both
-```
+Once released, `scripts/download_artifacts.py` fetches and md5-verifies both (its
+`ZENODO_RECORD` placeholder is filled in at release). Importantly, the mask does
+**not** require the download: it is rebuilt offline from the Forma forecast via
+`scripts/build_full_sample_mask.py` and checked against the pinned md5.
 
-This release reproduces the paper's **point track (Panels A and B)**. The density
-track (Panel C — exact mixture NLL/CRPS) needs the five per-seed forecasts and is
-out of scope here. The mask can also be rebuilt offline from the Forma forecast
-via `scripts/build_full_sample_mask.py` and checked against the pinned md5, so
-downloading it is only a convenience.
+This release covers the **point track (Panels A and B)**. The density track
+(Panel C — exact mixture NLL/CRPS) needs the five per-seed forecasts and is out of
+scope here.
 
 ---
 

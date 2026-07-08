@@ -11,7 +11,7 @@ abstract: >-
 type: software
 version: 0.1.0
 license: Apache-2.0
-repository-code: "https://github.com/forma-lab-mccombs/proforma-20q"
+repository-code: "https://github.com/ANONYMIZED/proforma-20q"
 keywords:
   - benchmark
   - financial-statement-forecasting
