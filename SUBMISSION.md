@@ -13,7 +13,7 @@ produce it by training your model on the ProForma-20Q build and predicting the
 | `origin`     | timestamp / Period[Q] | ✓ | the base quarter *t* (last quarter observed before forecasting) |
 | `horizon`    | int (1..20)     | ✓ | forecast is for quarter *t + horizon* |
 | `prediction` | float           | ✓ | point forecast of the item at *t+h*, **in regularized space** |
-| `sigma`      | float (> 0)     | optional | predictive standard deviation, same regularized space — include it to enter the **probabilistic track** |
+| `sigma`      | float (> 0)     | optional | predictive standard deviation, same regularized space (for `student_t`, the t **scale** parameter — see *Density family*) — include it to enter the **probabilistic track** |
 
 Notes:
 
@@ -40,10 +40,15 @@ parquet:
 { "family": "student_t", "df": 5.0 }
 ```
 
-`family ∈ {gaussian, laplace, student_t}`. For `laplace`/`student_t`, `sigma` is
-the predictive **standard deviation** (the scale is derived internally). NLL and
-CRPS are always computed **by the evaluator** against the single shared ground
-truth — never trusted from the generator.
+`family ∈ {gaussian, laplace, student_t}`. For **gaussian** and **laplace**,
+`sigma` is the predictive **standard deviation** (Laplace's scale `b = sigma/√2`
+is derived internally, so its SD is `sigma`). For **student_t**, `sigma` is the t
+**scale** parameter directly — the standard deviation `sigma·√(ν/(ν−2))` is finite
+only for `ν > 2`, so the scale (not the SD) is the primary parameter; the
+evaluator uses this same scale for both NLL and CRPS, so the two scores describe
+the identical predictive density. NLL and CRPS are always computed **by the
+evaluator** against the single shared ground truth — never trusted from the
+generator.
 
 ## Minimal example
 

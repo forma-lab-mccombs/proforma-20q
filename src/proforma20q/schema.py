@@ -9,7 +9,9 @@ A submission is a single parquet file, one row per forecasted cell:
     horizon   integer h in 1..20 -- the forecast is for quarter t+h
     prediction  point forecast of the item at t+h, IN REGULARIZED SPACE
     sigma     (optional) predictive standard deviation in the SAME regularized
-              space -- present only for the probabilistic track
+              space -- present only for the probabilistic track (for the
+              ``student_t`` family the evaluator reads it as the t scale, not the
+              SD; see SUBMISSION.md "Density family")
 
 Everything is in the regularized target space defined by ``transforms.py`` /
 ``build.py`` (scale -> asinh -> per-item z-score -> clamp). Predictions are

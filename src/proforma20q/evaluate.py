@@ -74,6 +74,8 @@ def nll_per_entry(res: np.ndarray, sigma: np.ndarray, family: str, df: float | N
         if df is None:
             raise ValueError("student_t NLL requires 'df' (degrees of freedom)")
         nu = float(df)
+        # sigma is the t SCALE here (not the SD); crps_per_entry uses the same
+        # convention so NLL and CRPS score the identical density. See SUBMISSION.md.
         c = math.lgamma((nu + 1.0) / 2.0) - math.lgamma(nu / 2.0) - 0.5 * math.log(nu * math.pi)
         return -c + 0.5 * log_sigma_sq + 0.5 * (nu + 1.0) * np.log1p(res * res / (nu * sigma_sq))
     raise ValueError(f"Unknown NLL family {family!r} (gaussian|laplace|student_t)")
