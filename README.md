@@ -201,20 +201,19 @@ is computed on `mask ∩ your models' common sample`:
 
 ```bash
 proforma20q evaluate my_forecasts.parquet --against baselines \
-    --sample-mask full_sample_mask.parquet
+    --sample-mask artifacts/full_sample_mask_bits.npy
 ```
 
 The mask is a keys table (`firm, target, origin, horizon`) or a compact
 grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no
-firm identifiers). Because the reference model's coverage is the binding
-constraint, the Full mask is exactly *its finite-prediction cells ∩ truth*;
-`scripts/build_full_sample_mask.py` rebuilds and verifies it (`--expect
-327244429`) offline from the Forma forecast — so you can produce the mask yourself
-without any download. On publication the prebuilt mask is also released as an
-archival asset (66–136 MB); its md5 and provenance are pinned now in
-[`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)
-(the grid-aligned bitmask is `a36008d8…`), so a download can be integrity-checked.
-See [Data & artifacts](#data--artifacts) for release status.
+firm identifiers). **The prebuilt grid-aligned mask ships in this repository** at
+[`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy)
+(~66 MB; md5 `a36008d8…`, pinned in
+[`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
+so the command above needs no download. Because the reference model's coverage is
+the binding constraint, the Full mask is exactly *its finite-prediction cells ∩
+truth*; `scripts/build_full_sample_mask.py` also rebuilds and verifies it
+(`--expect 327244429`) offline from the Forma forecast, reproducing the same md5.
 
 Restricted to the Full mask, the shipped baselines reproduce the paper's Panel A
 Full column **to the digit** (all on the identical 327,244,429-cell sample):
@@ -239,25 +238,28 @@ coverage limits.
 **No WRDS-derived data is distributed** — you rebuild the tabular/tuple artifacts
 yourself from your own Compustat licence (`proforma20q build`).
 
-> **⚠ Not yet available (placeholder).** The two supporting artifacts below are
+The **Full-sample mask ships in this repository** — it holds only a coverage
+bitmap, no firm-level values:
+
+| artifact | size | md5 | for |
+|---|---|---|---|
+| [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
+
+One further artifact is **not yet available** and is deferred to publication:
+
+> **⚠ Not yet available (placeholder).** The Forma ensemble forecast below is
 > published to an archival record (DOI assigned **on publication**); no record
 > exists yet. Until then `scripts/download_artifacts.py` is a placeholder that
 > **will not run** (its `ZENODO_RECORD` is unset and the script errors out). The
-> md5s are final, so it goes live the moment the record id is filled in.
-
-When released, these hold only **model outputs and a coverage mask — no firm-level
-values**:
+> md5 is final, so it goes live the moment the record id is filled in.
 
 | artifact | size | md5 | for |
 |---|---|---|---|
 | `forma_fgrid__pf_full__test__predictions.parquet` | ~4.2 GB | `c4f0f721…` | canonical R13 **Forma** 5-seed mixture forecast (point track). Pool your model against it to reproduce **Panels A / B**, or rebuild the mask from it. |
-| `full_sample_mask_bits.npy` | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned, no firm ids); pass to `evaluate --sample-mask`. |
 
-The mask does **not** depend on that download: it is rebuilt offline from the
-Forma forecast via `scripts/build_full_sample_mask.py` and checked against the
-pinned md5. This release covers the **point track (Panels A and B)**; the density
-track (Panel C — exact mixture NLL/CRPS) needs the five per-seed forecasts and is
-out of scope here.
+It holds only **model outputs — no firm-level values**. This release covers the
+**point track (Panels A and B)**; the density track (Panel C — exact mixture
+NLL/CRPS) needs the five per-seed forecasts and is out of scope here.
 
 ---
 
