@@ -130,8 +130,7 @@ def cmd_validate(args) -> int:
 
 
 def cmd_report_drift(args) -> int:
-    _print_drift(args.processed, _default_suffix(args.tag))
-    return 0
+    return _print_drift(args.processed, _default_suffix(args.tag))
 
 
 # --------------------------------------------------------------------------- #
@@ -149,20 +148,32 @@ def _print_verify(processed_dir, suffix) -> None:
     print(f"  ALL MATCH: {rep['all_match']}")
 
 
-def _print_drift(processed_dir, suffix) -> None:
+def _print_drift(processed_dir, suffix) -> int:
     from .checksums import report_drift
     rep = report_drift(processed_dir, suffix)
     if rep.get("_note"):
         print(f"\nDrift report: {rep['_note']}")
-        return
+        return 0
+    # A published artifact with no local file reads as "missing"; anything else
+    # is a file that exists on disk. Zero local files == nothing was built, which
+    # must be an explicit error, not a green (empty) "no drift" report.
+    present = [name for name, r in rep.items() if r.get("status") != "missing"]
+    if not present:
+        print(f"no built artifacts found under {processed_dir} -- run `proforma20q build` "
+              f"first", file=sys.stderr)
+        return 2
     print("\n=== Vintage-drift report (vs canonical checksums) ===")
     for name, r in rep.items():
-        if "frac_diff" in r:
+        status = r.get("status")
+        if status in ("missing", "extra"):
+            print(f"  {status:>9}  {name}")
+        elif "frac_diff" in r:
             print(f"  {name}: {r['n_diff']}/{r['n_cols']} cols diverge "
                   f"({r['frac_diff']:.1%}); file md5 match={r['file_md5_match']}; "
                   f"row delta={r['row_count_delta']}")
         else:
             print(f"  {name}: file md5 match={r.get('file_md5_match')}")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
