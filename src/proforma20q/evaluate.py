@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.special import ndtr  # standard-normal CDF (vectorized)
+from scipy.special import ndtr, stdtr  # standard-normal / Student-t CDF (vectorized)
 
 from .schema import SIGMA_COL, normalize_columns, read_forecast
 from .truth_grid import TruthGrid, build_residual
@@ -81,8 +81,9 @@ def nll_per_entry(res: np.ndarray, sigma: np.ndarray, family: str, df: float | N
 
 def crps_per_entry(res: np.ndarray, sigma: np.ndarray, family: str, df: float | None) -> np.ndarray:
     """Per-observation CRPS under the predictive density (closed forms). A proper
-    score in target units, far less tail-sensitive than NLL. Unwired families
-    (student_t) return NaN so they drop out of the accumulator cleanly.
+    score in target units, far less tail-sensitive than NLL. ``res = pred -
+    actual``; ``sigma`` is interpreted exactly as in :func:`nll_per_entry` so the
+    two scores describe the same predictive distribution.
     """
     if family == "gaussian":
         w = res / sigma
@@ -93,7 +94,28 @@ def crps_per_entry(res: np.ndarray, sigma: np.ndarray, family: str, df: float | 
         z = np.abs(res) / b
         return b * (z + np.exp(-z) - 0.75)
     if family == "student_t":
-        return np.full(np.shape(res), np.nan, dtype=np.float64)
+        if df is None:
+            raise ValueError("student_t CRPS requires 'df' (degrees of freedom)")
+        nu = float(df)
+        # The CRPS of a Student-t has a finite mean (and this closed form) only
+        # for nu > 1; nu <= 1 (e.g. Cauchy) has no finite CRPS -> NaN, dropping
+        # out of the accumulator cleanly.
+        if nu <= 1.0:
+            return np.full(np.shape(res), np.nan, dtype=np.float64)
+        # Location-scale Student-t CRPS (Gneiting & Raftery 2007; the closed form
+        # in the scoringRules R package `crps_t`). `sigma` is used directly as the
+        # t SCALE parameter -- identical to the student_t NLL branch above -- so
+        # NLL and CRPS score the same distribution. Verified against quadrature to
+        # <=1e-4 in tests/test_evaluate.py.
+        w = res / sigma
+        log_c = math.lgamma((nu + 1.0) / 2.0) - math.lgamma(nu / 2.0) - 0.5 * math.log(nu * math.pi)
+        pdf = np.exp(log_c) * (1.0 + w * w / nu) ** (-(nu + 1.0) / 2.0)
+        cdf = stdtr(nu, w)
+        # const = (2 sqrt(nu)/(nu-1)) * B(1/2, nu-1/2) / B(1/2, nu/2)^2, via lgamma.
+        log_bfrac = (math.lgamma(nu - 0.5) + 2.0 * math.lgamma((nu + 1.0) / 2.0)
+                     - 0.5 * math.log(math.pi) - math.lgamma(nu) - 2.0 * math.lgamma(nu / 2.0))
+        const = (2.0 * math.sqrt(nu) / (nu - 1.0)) * math.exp(log_bfrac)
+        return sigma * (w * (2.0 * cdf - 1.0) + 2.0 * pdf * (nu + w * w) / (nu - 1.0) - const)
     raise ValueError(f"Unknown CRPS family {family!r} (gaussian|laplace|student_t)")
 
 
