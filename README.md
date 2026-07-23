@@ -39,18 +39,25 @@ data, train, submit.
 
 ## Install
 
-```bash
-pip install proforma-20q            # scoring + baselines (any modern Python 3.10+)
-pip install proforma-20q[wrds]      # also the WRDS client, for the data build
-```
-
-or from source:
+Install from source — the supported path today (any modern Python 3.10+):
 
 ```bash
-git clone https://github.com/ANONYMIZED/proforma-20q   # repository URL (de-anonymized on release)
+# from a download or clone of this repository:
 cd proforma-20q
-pip install -e .[wrds,dev]
+pip install -e .[wrds,dev]          # scoring + baselines + WRDS client + tests
 ```
+
+Use `pip install -e .[wrds]` if you only need the data build, or
+`pip install -e .` for the scoring/baseline path alone (no WRDS client).
+
+> **PyPI — available once published.** On release the package will also install
+> straight from PyPI. This is **not yet available** (publication happens when the
+> repository goes public at submission):
+>
+> ```bash
+> pip install proforma-20q          # scoring + baselines
+> pip install proforma-20q[wrds]    # also the WRDS client, for the data build
+> ```
 
 ---
 
@@ -110,28 +117,40 @@ print(result.leaderboard("r2"))
 
 ## Reference baselines
 
-Cheap to run, they anchor the leaderboard and let you verify your pipeline:
+They anchor the leaderboard and let you verify your pipeline. `naive` and `fade`
+are near-instant; `linear` and especially `elasticnet` are heavier (see the note
+below), so for a quick end-to-end pipeline check run just the fast two:
+
+```bash
+proforma20q baselines --which naive,fade
+```
 
 | baseline     | what it is |
 |--------------|------------|
 | `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. |
 | `fade`       | pooled AR(1) / fade-to-mean — one `(ρ_h, b_h)` per horizon, pooled across items and firms. |
-| `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. |
+| `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. **Not cheap:** the CV is 42 `(alpha, l1_ratio)` combos × 20 horizons plus 1,560 refits. In the audit it ran ~40 min wall / ~4.3 GB RAM on a 150-firm *synthetic* panel; real Compustat has roughly 60× the firms, so budget memory and time accordingly (or skip it with `--which naive,fade`). |
 | `linear`     | plain OLS per (target, horizon). |
 
 **The Forma model is not included** — it is released separately.
 
 ## Leaderboard
 
-| model | R² (global) | MAE | NLL | CRPS |
-|-------|:-----------:|:---:|:---:|:----:|
-| naive (RW anchor) | 0.000 | — | — | — |
-| fade / AR(1) | *tbd* | — | — | — |
-| ElasticNet | *tbd* | — | — | — |
-| *your model here* | | | | |
+The headline benchmark number is the **Full-sample pooled R²** — the paper's
+327,244,429-cell column (see [Reproducing the paper's pooled tables](#reproducing-the-papers-pooled-tables)).
+On a canonical build the shipped baselines score:
 
-Numbers are populated from the canonical build at release. To add a model, open a
-PR with your forecast-file checksum and reproduction instructions.
+| model | R² (Full sample) |
+|-------|:----------------:|
+| naive (RW anchor) | −0.0412 |
+| fade / AR(1) | 0.1827 |
+| ElasticNet | 0.2585 |
+| *your model here* | |
+
+These are the same canonical values reproduced in the pooled table below;
+regenerate them with a canonical build + `proforma20q evaluate --against baselines
+--sample-mask …`. To add a model, open a PR with your forecast-file checksum and
+reproduction instructions.
 
 ---
 
@@ -140,10 +159,15 @@ PR with your forecast-file checksum and reproduction instructions.
 Compustat is **revised over time**, so a fresh WRDS pull today will not be
 bit-identical to the canonical snapshot. We therefore:
 
-1. **Pin the environment.** For a bit-exact rebuild, install the lockfile:
+1. **Pin the environment.** For a rebuild against pinned dependencies, install
+   the lockfile:
    ```bash
    pip install -r requirements-lock.txt
    ```
+   It pins the **direct** dependencies (no hashes; transitive deps float), so it
+   reproduces the build to float precision rather than guaranteeing bit-for-bit
+   identical bytes — use `report-drift` (below) to quantify any residual
+   environment/vintage drift.
 2. **Pin the query.** The exact WRDS SQL lives in `src/proforma20q/download.py`;
    the sample window and filters are in `src/proforma20q/configs/task.yaml`.
 3. **Publish hashes, not data.** `src/proforma20q/checksums.json` holds the md5s
