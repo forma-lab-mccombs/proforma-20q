@@ -69,7 +69,13 @@ def cmd_baselines(args) -> int:
     from .baselines import run_baselines
     suffix = _default_suffix(args.tag)
     which = [w.strip() for w in args.which.split(",")] if args.which else None
-    run_baselines(args.processed, suffix, args.out, which=which)
+    try:
+        run_baselines(args.processed, suffix, args.out, which=which)
+    except FileNotFoundError as e:
+        # No build present: print a clean one-liner (like build/evaluate) instead
+        # of dumping a raw traceback.
+        print(str(e), file=sys.stderr)
+        return 2
     return 0
 
 

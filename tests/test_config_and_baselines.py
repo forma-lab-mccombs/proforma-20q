@@ -22,6 +22,20 @@ def test_task_config_matches_paper():
     assert task["feature_engineering"]["yoy_changes"] == 8
 
 
+def test_baselines_cli_missing_build_exits_2(tmp_path, capsys):
+    """`proforma20q baselines` with no build prints a clean one-liner and exits 2
+    (like build/evaluate), not a raw traceback."""
+    from proforma20q.cli import main
+
+    empty = tmp_path / "processed"
+    empty.mkdir()
+    rc = main(["baselines", "--processed", str(empty), "--out", str(tmp_path / "fc")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "missing tabular split" in err
+    assert "proforma20q build" in err
+
+
 def test_elasticnet_and_linear_run(tmp_path):
     raw = synthetic_raw(n_firms=20)
     raw_path = tmp_path / "raw.parquet"
