@@ -36,6 +36,30 @@ def test_missing_column_flagged():
         validate_forecast(fc, strict=True)
 
 
+def test_all_valid_targets_pass():
+    fc = _valid_fc()
+    assert not any("target" in p for p in validate_forecast(fc, strict=False))
+
+
+def test_fully_bogus_target_rejected():
+    fc = _valid_fc()
+    fc["target"] = "not_a_real_target"
+    problems = validate_forecast(fc, strict=False)
+    assert any("not among the 78 pf_full targets" in p for p in problems)
+    with pytest.raises(SubmissionError):
+        validate_forecast(fc, strict=True)
+
+
+def test_partially_bogus_target_rejected():
+    fc = _valid_fc()
+    # Misspell the target on a subset of rows: the valid rows still validate,
+    # but the misspelled ones must be flagged rather than silently dropped.
+    fc.loc[fc.index[:5], "target"] = "niqq"
+    problems = validate_forecast(fc, strict=False)
+    tprob = [p for p in problems if "target" in p]
+    assert tprob and "niqq" in tprob[0]
+
+
 def test_horizon_out_of_range_flagged():
     fc = _valid_fc()
     fc.loc[0, "horizon"] = 25

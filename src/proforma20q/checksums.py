@@ -171,18 +171,25 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None) -> d
     differs from the canonical build (a coarse divergence measure that does not
     require -- or reveal -- the canonical data).
 
+    Iterates the *published* artifact list (like :func:`verify_checksums`), so a
+    published artifact with no local file surfaces as ``{"status": "missing"}``
+    rather than being silently absent -- a machine with no build must not read
+    as "no drift". Local files with no published entry surface as
+    ``{"status": "extra"}``.
+
     Returns ``{artifact: {"n_cols", "n_diff", "frac_diff", "file_md5_match",
-    "row_count_delta"}}``.
+    "row_count_delta"} | {"status": "missing"|"extra"}}``.
     """
     published = published or load_published_checksums()
     if published.get("_status") != "populated":
         return {"_note": "published checksums are unpopulated; nothing to compare against"}
     pub = published.get("artifacts", {})
+    present = artifact_paths(processed_dir, suffix)  # existing files only
     report: dict = {}
-    for name, path in artifact_paths(processed_dir, suffix).items():
-        pentry = pub.get(name)
-        if pentry is None:
-            report[name] = {"note": "no published entry"}
+    for name, pentry in pub.items():
+        path = present.get(name)
+        if path is None:
+            report[name] = {"status": "missing"}
             continue
         entry: dict = {"file_md5_match": hash_file(path) == pentry["md5"]}
         if name.startswith("tabular_") and "column_md5" in pentry:
@@ -200,4 +207,7 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None) -> d
                 "row_count_delta": int(len(df) - pentry.get("n_rows", len(df))),
             })
         report[name] = entry
+    for name in present:
+        if name not in pub:
+            report[name] = {"status": "extra"}
     return report

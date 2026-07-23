@@ -121,6 +121,54 @@ def test_gaussian_probabilistic_metrics():
     assert row["crps"] > 0
 
 
+def test_student_t_crps_matches_quadrature():
+    """The location-scale student_t CRPS closed form must agree with the integral
+    definition CRPS(F, y) = ∫ (F(x) − 1{x≥y})² dx to ≤ 1e-4, across several
+    (df, sigma, residual) combos -- the mandatory numerical check before shipping
+    the closed form (df ∈ {1.5, 3, 5, 30})."""
+    from scipy import integrate, stats
+
+    from proforma20q.evaluate import crps_per_entry
+
+    def crps_quad(res, sigma, nu):
+        # predictive t centered at the forecast (loc=res) scored against y=0, so
+        # the standardized residual is -res/sigma (CRPS is symmetric).
+        dist = stats.t(df=nu, loc=res, scale=sigma)
+        integrand = lambda x: (dist.cdf(x) - (1.0 if x >= 0.0 else 0.0)) ** 2  # noqa: E731
+        lo, hi = res - 400.0 * sigma, res + 400.0 * sigma
+        val, _ = integrate.quad(integrand, lo, hi, limit=500, points=[0.0])
+        return val
+
+    worst = 0.0
+    for nu in (1.5, 3.0, 5.0, 30.0):
+        for sigma in (0.5, 1.0, 2.3):
+            for res in (0.0, 0.7, -1.9, 5.0):
+                closed = float(crps_per_entry(np.array([res]), np.array([sigma]),
+                                              "student_t", nu)[0])
+                worst = max(worst, abs(closed - crps_quad(res, sigma, nu)))
+    assert worst <= 1e-4, f"worst student_t CRPS error {worst:.2e} exceeds 1e-4"
+
+
+def test_student_t_crps_below_df_one_is_nan():
+    """nu <= 1 (no finite CRPS) drops out as NaN instead of raising or lying."""
+    from proforma20q.evaluate import crps_per_entry
+
+    out = crps_per_entry(np.array([0.5, -1.0]), np.array([1.0, 1.0]), "student_t", 1.0)
+    assert np.isnan(out).all()
+
+
+def test_student_t_sidecar_produces_finite_crps():
+    """A student_t forecast (declared as a .nll.json sidecar would, here via the
+    families override) now yields a finite CRPS, not NaN."""
+    truth = synthetic_truth(n_firms=40, n_q=6, seed=3)
+    fc = forecast_from_truth(truth, noise=1.0, sigma=1.0, seed=4)
+    res = evaluate_forecasts({"t": fc}, truth,
+                             families={"t": ("student_t", 5.0)}, verbose=False)
+    row = res.leaderboard()[lambda d: d.model == "t"].iloc[0]
+    assert np.isfinite(row["nll"])
+    assert np.isfinite(row["crps"]) and row["crps"] > 0
+
+
 def test_missing_forecast_raises_without_allow_missing():
     truth = synthetic_truth(n_firms=5, n_q=2)
     good = forecast_from_truth(truth, noise=0.1)

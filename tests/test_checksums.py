@@ -7,6 +7,7 @@ download_date / task_version survive population (issue #1's documented workflow)
 from __future__ import annotations
 
 import json
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -85,6 +86,59 @@ def test_download_date_preserved_on_rerun(tmp_path):
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["download_date"] == "2026-07-02"
     assert rec["task_version"] == "r13"
+
+
+def test_drift_empty_processed_reports_all_missing(tmp_path):
+    """No build at all: report_drift must surface every published artifact as
+    'missing' rather than returning an empty (green-looking) report."""
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    out = tmp_path / "checksums.json"
+    write_checksums(ref, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    published = json.loads(out.read_text(encoding="utf-8"))
+
+    empty = tmp_path / "processed"
+    empty.mkdir()
+    drift = report_drift(empty, SUFFIX, published=published)
+    assert drift, "empty build must not yield an empty drift report"
+    assert set(drift) == set(published["artifacts"])
+    assert all(r.get("status") == "missing" for r in drift.values())
+
+
+def test_drift_partial_build_mixes_missing_and_reported(tmp_path):
+    """A partial build reports the present artifact and marks the rest missing."""
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    out = tmp_path / "checksums.json"
+    write_checksums(ref, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    published = json.loads(out.read_text(encoding="utf-8"))
+
+    proc = tmp_path / "processed"
+    proc.mkdir()
+    only = f"tabular_test__{SUFFIX}.parquet"
+    shutil.copy(ref / only, proc / only)
+
+    drift = report_drift(proc, SUFFIX, published=published)
+    assert "frac_diff" in drift[only] and drift[only]["file_md5_match"] is True
+    missing = [n for n, r in drift.items() if r.get("status") == "missing"]
+    assert missing and only not in missing
+
+
+def test_report_drift_cli_exits_2_on_empty_machine(tmp_path, capsys):
+    """`proforma20q report-drift` on a machine with no build exits 2 with an
+    explicit message (consistent with build/evaluate missing-data behavior),
+    using the shipped (populated) canonical checksums."""
+    from proforma20q.cli import main
+
+    empty = tmp_path / "processed"
+    empty.mkdir()
+    rc = main(["report-drift", "--processed", str(empty)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no built artifacts found" in err
+    assert "proforma20q build" in err
 
 
 def test_drift_detects_changed_values(tmp_path):
