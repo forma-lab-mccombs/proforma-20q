@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .config import pf_full_targets
+
 PARQUET_ENGINE = "fastparquet"
 
 FIRM_COL = "firm"
@@ -65,9 +67,10 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True) -> list[str]:
     ``strict=True`` a non-empty list is raised as :class:`SubmissionError`;
     with ``strict=False`` the caller decides what to do with the warnings.
 
-    Checks: required columns present, horizon is an integer in 1..20,
-    prediction is numeric and not entirely null, sigma (if present) is numeric
-    and strictly positive where finite, and keys are unique.
+    Checks: required columns present, every ``target`` is one of the 78 pf_full
+    items, horizon is an integer in 1..20, prediction is numeric and not
+    entirely null, sigma (if present) is numeric and strictly positive where
+    finite, and keys are unique.
     """
     problems: list[str] = []
     df = normalize_columns(df)
@@ -79,6 +82,19 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True) -> list[str]:
         if strict and problems:
             raise SubmissionError("; ".join(problems))
         return problems
+
+    # target: every value must be one of the 78 pf_full items (a misspelled
+    # target would otherwise validate and then silently drop out of the
+    # common-sample join in evaluate, scoring on only the rows that matched).
+    valid_targets = set(pf_full_targets())
+    tgt = df[TARGET_COL].astype(str)
+    unknown = sorted(set(tgt[~tgt.isin(valid_targets)]))
+    if unknown:
+        shown = ", ".join(unknown[:10])
+        more = f", ... (+{len(unknown) - 10} more)" if len(unknown) > 10 else ""
+        problems.append(
+            f"{TARGET_COL} has {len(unknown)} name(s) not among the 78 pf_full "
+            f"targets: {shown}{more}")
 
     # horizon: integer 1..20
     h = pd.to_numeric(df[HORIZON_COL], errors="coerce")
