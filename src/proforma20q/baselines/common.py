@@ -14,10 +14,13 @@ all in the regularized target space.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
+import numpy as np
 import pandas as pd
 
 from ..schema import (
+    ALIASES,
     FIRM_COL,
     HORIZON_COL,
     ORIGIN_COL,
@@ -30,13 +33,22 @@ _TARGET_RE = re.compile(r"(.+)_t(\d+)$")
 _LEVEL0_RE = re.compile(r"(.+)_level_0$")
 
 
-def feature_columns(df: pd.DataFrame) -> list[str]:
+def _colnames(obj) -> list[str]:
+    """Column names of a frame, or the sequence itself.
+
+    Accepting a bare name list lets the driver decide which columns to *read*
+    before paying for them -- a tabular split is ~2,547 columns and several GB.
+    """
+    return list(obj.columns) if hasattr(obj, "columns") else list(obj)
+
+
+def feature_columns(df) -> list[str]:
     """Model input columns: the lagged levels / YoY changes and FF48 dummies.
 
     Excludes the target ``_t{h}`` columns and the metadata keys.
     """
     cols = []
-    for c in df.columns:
+    for c in _colnames(df):
         if _TARGET_RE.match(c):
             continue
         if "_level_" in c or "_yoy_" in c or c.startswith("indff48_"):
@@ -44,10 +56,10 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     return cols
 
 
-def target_columns(df: pd.DataFrame, targets: list[str] | None = None) -> list[str]:
+def target_columns(df, targets: list[str] | None = None) -> list[str]:
     """Sorted ``{item}_t{h}`` target columns, optionally restricted to ``targets``."""
     out = []
-    for c in df.columns:
+    for c in _colnames(df):
         m = _TARGET_RE.match(c)
         if not m:
             continue
@@ -56,11 +68,12 @@ def target_columns(df: pd.DataFrame, targets: list[str] | None = None) -> list[s
     return sorted(out, key=lambda c: (_TARGET_RE.match(c).group(1), int(_TARGET_RE.match(c).group(2))))
 
 
-def discover_targets(df: pd.DataFrame) -> list[str]:
+def discover_targets(df) -> list[str]:
     """Item names that have BOTH a ``{item}_level_0`` baseline and ``{item}_t{h}``
     target columns -- the scoreable joint targets in this frame."""
-    have_level0 = {m.group(1) for c in df.columns if (m := _LEVEL0_RE.match(c))}
-    have_target = {m.group(1) for c in df.columns if (m := _TARGET_RE.match(c))}
+    cols = _colnames(df)
+    have_level0 = {m.group(1) for c in cols if (m := _LEVEL0_RE.match(c))}
+    have_target = {m.group(1) for c in cols if (m := _TARGET_RE.match(c))}
     return sorted(have_level0 & have_target)
 
 
@@ -69,32 +82,83 @@ def parse_target_col(col: str) -> tuple[str, int]:
     return m.group(1), int(m.group(2))
 
 
+def forecast_block(meta: pd.DataFrame, values, target: str, horizon: int) -> pd.DataFrame:
+    """One ``(target, horizon)`` block of a forecast, in the submission schema.
+
+    The unit of assembly for a full-coverage submission. A complete forecast on
+    the canonical test split is 352,106 origins x 78 targets x 20 horizons =
+    **549,285,360 rows**; melting that in one call needs >20 GB before melt's own
+    intermediates and raises ``ArrayMemoryError``. One block is 1/1560th of it.
+    """
+    firm = meta[FIRM_COL].to_numpy()
+    n = len(firm)
+    return pd.DataFrame({
+        FIRM_COL: firm,
+        TARGET_COL: np.full(n, target, dtype=object),
+        ORIGIN_COL: meta[ORIGIN_COL].to_numpy(),
+        HORIZON_COL: np.full(n, int(horizon), dtype=np.int64),
+        PREDICTION_COL: np.asarray(values),
+    })
+
+
+def wide_prediction_blocks(
+    meta: pd.DataFrame,
+    pred_wide: pd.DataFrame,
+    target_cols: list[str],
+) -> Iterator[pd.DataFrame]:
+    """Yield one submission-schema block per ``{item}_t{h}`` column of a wide
+    prediction frame. Streaming form of :func:`wide_predictions_to_long`."""
+    for col in target_cols:
+        item, h = parse_target_col(col)
+        yield forecast_block(meta, pred_wide[col].to_numpy(), item, h)
+
+
 def wide_predictions_to_long(
     meta: pd.DataFrame,
     pred_wide: pd.DataFrame,
     target_cols: list[str],
 ) -> pd.DataFrame:
-    """Melt a wide ``{item}_t{h}`` prediction frame into the submission schema.
+    """Reshape a wide ``{item}_t{h}`` prediction frame into the submission schema.
 
     ``meta`` carries ``firm`` and ``origin`` aligned row-for-row with
-    ``pred_wide``.
+    ``pred_wide``. Convenience form that materializes the whole long frame --
+    fine at test scale, but a full-coverage forecast is ~550M rows: stream it
+    with :func:`wide_prediction_blocks` +
+    :func:`~proforma20q.schema.write_forecast_blocks` instead.
     """
-    frame = pred_wide[target_cols].copy()
-    frame[FIRM_COL] = meta[FIRM_COL].to_numpy()
-    frame[ORIGIN_COL] = meta[ORIGIN_COL].to_numpy()
-    long = frame.melt(
-        id_vars=[FIRM_COL, ORIGIN_COL],
-        value_vars=target_cols,
-        var_name="_tcol",
-        value_name=PREDICTION_COL,
-    )
-    split = long["_tcol"].str.rsplit("_t", n=1, expand=True)
-    long[TARGET_COL] = split[0]
-    long[HORIZON_COL] = split[1].astype(int)
-    return long[[FIRM_COL, TARGET_COL, ORIGIN_COL, HORIZON_COL, PREDICTION_COL]]
+    blocks = list(wide_prediction_blocks(meta, pred_wide, target_cols))
+    if not blocks:
+        return pd.DataFrame(columns=[FIRM_COL, TARGET_COL, ORIGIN_COL,
+                                     HORIZON_COL, PREDICTION_COL])
+    return pd.concat(blocks, ignore_index=True)
 
 
-def load_tabular(path) -> pd.DataFrame:
-    """Read a tabular artifact and normalize the metadata column names."""
+def tabular_columns(path) -> list[str]:
+    """Column names of a tabular artifact, read from the parquet schema only."""
+    import fastparquet  # noqa: PLC0415
+    return [ALIASES.get(c, c) for c in fastparquet.ParquetFile(str(path)).columns]
+
+
+def load_tabular(path, columns: list[str] | None = None) -> pd.DataFrame:
+    """Read a tabular artifact and normalize the metadata column names.
+
+    ``columns`` projects the read. The canonical splits are 2,547 columns and
+    ~12 GB across the three of them; `naive` reads 79 of those columns and
+    `fade` 1,639, so the projection is the difference between a baseline run
+    that fits in memory and one that does not.
+    """
     from ..schema import PARQUET_ENGINE
-    return normalize_columns(pd.read_parquet(path, engine=PARQUET_ENGINE))
+    if columns is not None:
+        # translate public names back to whatever the file actually stores
+        stored = set(fastparquet_columns(path))
+        inverse = {v: k for k, v in ALIASES.items()}
+        columns = [c if c in stored else inverse.get(c, c) for c in columns]
+        columns = [c for c in dict.fromkeys(columns) if c in stored]
+    return normalize_columns(pd.read_parquet(path, engine=PARQUET_ENGINE,
+                                             columns=columns))
+
+
+def fastparquet_columns(path) -> list[str]:
+    """Raw (un-normalized) column names of a parquet file."""
+    import fastparquet  # noqa: PLC0415
+    return list(fastparquet.ParquetFile(str(path)).columns)

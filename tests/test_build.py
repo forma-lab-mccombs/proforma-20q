@@ -150,6 +150,128 @@ def test_yoy_clamp_is_wider_than_levels_by_1p4142():
     assert np.isclose(yoy_correct, np.clip(8.0, -max_z * 1.4142, max_z * 1.4142))  # 9-1=8
 
 
+def _prepped_synthetic(raw=None):
+    """Run the orchestrator's prep steps so the tabular builder can be called
+    directly (what `build()` hands to `prepare_panel`)."""
+    from proforma20q.build import (add_computed_features, compute_scale,
+                                   convert_ytd_to_quarterly, firm_ff48_map)
+    from proforma20q.config import feature_set_items, load_task_config
+    task = load_task_config()
+    raw = synthetic_raw() if raw is None else raw
+    raw = raw.rename(columns={"gvkey": "firm_id", "datadate": "quarter", "naicsh": "naics"})
+    raw["firm_id"] = raw["firm_id"].astype(str)
+    firm_ind = firm_ff48_map(raw)
+    raw["quarter"] = pd.to_datetime(raw["quarter"]).dt.to_period("Q").dt.end_time
+    raw = convert_ytd_to_quarterly(raw)
+    items = feature_set_items(task["benchmark"]["feature_set"])
+    raw = add_computed_features(raw, items)
+    raw["scale"] = compute_scale(raw, task["scaling"])
+    targets = [it for it in items if it in raw.columns]
+    return raw, items, targets, firm_ind, task
+
+
+def test_vectorized_panel_matches_per_firm_expansion():
+    """`prepare_panel` expands every firm at once; it must agree cell-for-cell
+    with applying the per-firm `_contiguous_panel` reference form. Guards I-1:
+    the pre-allocated builder is only correct if positional shifts still equal
+    calendar lags for every firm, including firms with quarter gaps."""
+    from proforma20q.build import _contiguous_panel, prepare_panel
+
+    raw, items, _t, _fi, _task = _prepped_synthetic()
+    # Punch gaps into two firms so the expansion has real work to do.
+    drop = ((raw["firm_id"] == "00003") & (raw["quarter"].dt.year == 2004)) | \
+           ((raw["firm_id"] == "00007") & (raw["quarter"].dt.quarter == 2))
+    raw = raw[~drop].reset_index(drop=True)
+
+    panel = prepare_panel(raw, items)
+    expected = pd.concat(
+        [_contiguous_panel(g, "quarter") for _f, g in
+         raw.sort_values(["firm_id", "quarter"]).groupby("firm_id", sort=False)],
+        ignore_index=True)
+
+    assert len(panel) == len(expected)
+    assert (panel.quarter == expected["quarter"].to_numpy()).all()
+    # firm_id is NaN on gap-filled rows of the reference form; compare the ids we
+    # reconstruct against the per-firm block layout instead.
+    for col in ("scale", "niq", "revtq", "atq"):
+        np.testing.assert_array_equal(panel.values[col],
+                                      expected[col].to_numpy(float), err_msg=col)
+    # positional shift == calendar lag: 4 rows back is exactly one year back
+    back4 = np.roll(panel.qord, 4)
+    inner = panel.pos_in_firm >= 4
+    assert (panel.qord[inner] - back4[inner] == 4).all()
+
+
+def test_split_builder_matches_full_frame_builder():
+    """`build_tabular_splits` (used by `build()`) must be bit-identical to
+    `split_tabular(build_tabular(...))`. The split path exists only to keep the
+    unsplit 12 GB matrix from ever being materialized (I-1), so any divergence
+    between the two is a silent redefinition of the artifacts."""
+    from proforma20q.build import (build_tabular, build_tabular_splits,
+                                   create_regularization_stats, prepare_panel,
+                                   split_tabular)
+
+    raw, items, targets, firm_ind, task = _prepped_synthetic()
+    fe, splits = task["feature_engineering"], task["splits"]
+    reg = create_regularization_stats(
+        raw, items, fe, pd.Timestamp(f"{splits['train_end_year']}-12-31"))
+    kw = dict(tabular_industry_fe=task["industry"]["tabular_industry_fe"],
+              present_in_q0=task["targets"]["present_in_q0"])
+
+    whole = build_tabular(raw, reg, items, targets, fe, firm_ind, **kw)
+    expected = dict(zip(("train", "val", "test"),
+                        split_tabular(whole, splits["train_end_year"],
+                                      splits["val_end_year"], targets,
+                                      fe["forecast_horizon"])))
+    got = dict(build_tabular_splits(prepare_panel(raw, items), reg, targets, fe,
+                                    firm_ind, splits, **kw))
+
+    for name in ("train", "val", "test"):
+        a, b = expected[name], got[name]
+        assert list(a.columns) == list(b.columns)
+        assert a.shape == b.shape and len(a) > 0
+        assert (a["firm_id"].to_numpy() == b["firm_id"].to_numpy()).all()
+        assert (a["quarter"].to_numpy() == b["quarter"].to_numpy()).all()
+        av, bv = a.iloc[:, 2:].to_numpy(), b.iloc[:, 2:].to_numpy()
+        np.testing.assert_array_equal(np.isnan(av), np.isnan(bv))
+        both = ~np.isnan(av)
+        np.testing.assert_array_equal(av[both], bv[both])  # bit-identical, not allclose
+
+
+def test_build_ignores_unconsumed_raw_columns(tmp_path):
+    """`build` reads only the columns it consumes (86 of a `SELECT f.*` panel's
+    655). Extra columns must change nothing about the output -- and must not be
+    loaded, which is what keeps the raw panel out of the ~25 GB range (I-2)."""
+    from proforma20q.build import required_raw_columns
+
+    raw = synthetic_raw(n_firms=8)
+    lean = tmp_path / "lean.parquet"
+    raw.to_parquet(lean, engine="fastparquet", index=False)
+
+    fat_df = raw.copy()
+    for i in range(40):  # columns comp.fundq ships and the benchmark never reads
+        fat_df[f"junk{i}"] = np.arange(len(raw), dtype=float)
+    fat = tmp_path / "fat.parquet"
+    fat_df.to_parquet(fat, engine="fastparquet", index=False)
+
+    a = build(lean, tmp_path / "a", dataset_tag="a", which=("tabular",), verbose=False)
+    b = build(fat, tmp_path / "b", dataset_tag="b", which=("tabular",), verbose=False)
+    assert not any(c.startswith("junk") for c in required_raw_columns())
+    for split in ("tabular_train", "tabular_val", "tabular_test"):
+        pd.testing.assert_frame_equal(load_tabular(a[split]), load_tabular(b[split]))
+
+
+def test_prepare_panel_rejects_duplicate_firm_quarter():
+    """The per-firm `reindex` form raised on duplicate keys; the vectorized form
+    would silently keep whichever row was scattered last, so it must refuse too."""
+    from proforma20q.build import prepare_panel
+
+    raw, items, _t, _fi, _task = _prepped_synthetic()
+    dup = pd.concat([raw, raw.iloc[[0]]], ignore_index=True)
+    with pytest.raises(ValueError, match="duplicate"):
+        prepare_panel(dup, items)
+
+
 def test_computed_features_overwrite_native_columns():
     """wcapq/gpq/dvcq ship natively in comp.fundq but the benchmark DEFINES them
     via formula; the builder must overwrite the native column (matching the

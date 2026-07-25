@@ -7,6 +7,7 @@ from proforma20q.schema import (
     normalize_columns,
     validate_forecast,
     write_forecast,
+    write_forecast_blocks,
     read_forecast,
 )
 from fixtures import forecast_from_truth, synthetic_truth
@@ -86,3 +87,61 @@ def test_write_read_round_trip(tmp_path):
     back = read_forecast(p, validate=True, strict=True)
     assert len(back) == len(fc)
     assert back["prediction"].dtype == np.float32
+
+
+def _blocks(fc):
+    """Split a forecast into (target, horizon) blocks, the streaming unit."""
+    return [g for _k, g in fc.groupby(["target", "horizon"], sort=False)]
+
+
+def test_block_writer_matches_single_write(tmp_path):
+    """`write_forecast_blocks` is the writer a full-coverage (~550M row)
+    submission needs; it must produce the same file contents as the one-shot
+    writer for data small enough for both."""
+    fc = _valid_fc()
+    one, many = tmp_path / "one.parquet", tmp_path / "many.parquet"
+    write_forecast(fc, one)
+    n = write_forecast_blocks(_blocks(fc), many, rows_per_group=7)
+    assert n == len(fc)
+
+    a = read_forecast(one, validate=False).sort_values(
+        ["firm", "target", "origin", "horizon"]).reset_index(drop=True)
+    b = read_forecast(many, validate=False).sort_values(
+        ["firm", "target", "origin", "horizon"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_block_writer_emits_multiple_row_groups(tmp_path):
+    """Row-group-per-buffer is the point: peak memory is the buffer, not the
+    submission."""
+    import fastparquet
+
+    fc = _valid_fc()
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
+    pf = fastparquet.ParquetFile(str(p))
+    assert len(pf.row_groups) > 1
+    assert sum(rg.num_rows for rg in pf.row_groups) == len(fc)
+
+
+def test_block_writer_validates_each_block(tmp_path):
+    fc = _valid_fc()
+    bad = _blocks(fc)
+    bad[1] = bad[1].assign(target="not_a_real_item")
+    with pytest.raises(SubmissionError):
+        write_forecast_blocks(bad, tmp_path / "fc.parquet")
+
+
+def test_block_writer_rejects_an_empty_stream(tmp_path):
+    with pytest.raises(SubmissionError):
+        write_forecast_blocks([], tmp_path / "fc.parquet")
+
+
+def test_block_writer_overwrites_a_stale_file(tmp_path):
+    """Appending row-groups to a file left over from a previous run would
+    silently double a submission."""
+    fc = _valid_fc()
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
+    write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
+    assert len(read_forecast(p, validate=False)) == len(fc)

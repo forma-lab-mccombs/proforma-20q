@@ -24,6 +24,9 @@ normalized on read.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+from pathlib import Path
+
 import pandas as pd
 
 from .config import pf_full_targets
@@ -62,7 +65,8 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=present) if present else df
 
 
-def validate_forecast(df: pd.DataFrame, *, strict: bool = True) -> list[str]:
+def validate_forecast(df: pd.DataFrame, *, strict: bool = True,
+                      check_duplicates: bool = True) -> list[str]:
     """Validate a forecast frame against the submission schema.
 
     Returns a list of human-readable problem strings (empty == valid). With
@@ -122,11 +126,15 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True) -> list[str]:
             n_bad = int((sig[finite] <= 0).sum())
             problems.append(f"{SIGMA_COL} must be > 0 where present ({n_bad} non-positive value(s))")
 
-    # duplicate keys (evaluator keeps first; warn so it isn't silent)
-    dup = df.duplicated(subset=KEY_COLS)
-    if dup.any():
-        problems.append(
-            f"{int(dup.sum())} duplicate {KEY_COLS} row(s) (evaluator keeps the first of each)")
+    # duplicate keys (evaluator keeps first; warn so it isn't silent). Skippable
+    # because a streamed write validates each block separately, and blocks are
+    # disjoint by construction -- a full-coverage submission is ~550M rows and
+    # the duplicate scan over object keys is the expensive check.
+    if check_duplicates:
+        dup = df.duplicated(subset=KEY_COLS)
+        if dup.any():
+            problems.append(
+                f"{int(dup.sum())} duplicate {KEY_COLS} row(s) (evaluator keeps the first of each)")
 
     if strict and problems:
         raise SubmissionError("; ".join(problems))
@@ -148,17 +156,85 @@ def read_forecast(path, *, validate: bool = True, strict: bool = False) -> pd.Da
     return df
 
 
+def _forecast_payload(df: pd.DataFrame) -> pd.DataFrame:
+    """Submission columns only, with float32 predictions and string keys."""
+    out = df[[c for c in REQUIRED_COLS + OPTIONAL_COLS if c in df.columns]].copy()
+    for col in (PREDICTION_COL, SIGMA_COL):
+        if col in out.columns:
+            out[col] = out[col].astype("float32")
+    # ids may be carried internally as categorical / integer codes to keep the
+    # in-memory footprint down; the on-disk schema is plain strings.
+    for col in (FIRM_COL, TARGET_COL):
+        if isinstance(out[col].dtype, pd.CategoricalDtype):
+            out[col] = out[col].astype(str)
+    return out
+
+
 def write_forecast(df: pd.DataFrame, path, *, validate: bool = True) -> None:
     """Write a forecast frame to parquet with the canonical fastparquet engine.
 
     Downcasts ``prediction``/``sigma`` to float32 (lossless for the ~3-4 sig-fig
     metrics in regularized space) to match the Forma forecast-write contract.
+
+    Needs the whole forecast in memory. A **full-coverage** submission on the
+    canonical test split is 352,106 origins x 78 targets x 20 horizons =
+    **549,285,360 rows (~4 GB on disk, >20 GB in memory)** -- use
+    :func:`write_forecast_blocks` for anything near that size.
     """
     df = normalize_columns(df)
     if validate:
         validate_forecast(df, strict=True)
-    out = df[[c for c in REQUIRED_COLS + OPTIONAL_COLS if c in df.columns]].copy()
-    for col in (PREDICTION_COL, SIGMA_COL):
-        if col in out.columns:
-            out[col] = out[col].astype("float32")
-    out.to_parquet(path, engine=PARQUET_ENGINE, index=False)
+    _forecast_payload(df).to_parquet(path, engine=PARQUET_ENGINE, index=False)
+
+
+def write_forecast_blocks(blocks: Iterable[pd.DataFrame], path, *,
+                          validate: bool = True,
+                          rows_per_group: int = 4_000_000) -> int:
+    """Stream a forecast to parquet, appending row-groups instead of one write.
+
+    ``blocks`` is any iterable of submission-schema frames -- typically one per
+    ``(target, horizon)``. Blocks are buffered to ~``rows_per_group`` rows and
+    written as successive parquet row-groups, so peak memory is set by the
+    buffer (a few hundred MB) rather than by the size of the submission.
+
+    This is the writer a full-coverage entry needs: ~550M rows will not fit in a
+    single frame on an ordinary machine.
+
+    Validation runs per block; the cross-block duplicate-key scan is skipped
+    (blocks are disjoint by construction) -- run ``proforma20q validate`` on the
+    finished file for the complete check.
+
+    Returns the number of rows written.
+    """
+    path = Path(path)
+    if path.exists():
+        path.unlink()
+    buf: list[pd.DataFrame] = []
+    buffered = n_rows = 0
+    first = True
+
+    def flush():
+        nonlocal buf, buffered, first
+        if not buf:
+            return
+        part = buf[0] if len(buf) == 1 else pd.concat(buf, ignore_index=True)
+        part.to_parquet(path, engine=PARQUET_ENGINE, index=False, append=not first)
+        first = False
+        buf, buffered = [], 0
+
+    for block in blocks:
+        block = normalize_columns(block)
+        if validate:
+            validate_forecast(block, strict=True, check_duplicates=False)
+        payload = _forecast_payload(block)
+        if payload.empty:
+            continue
+        buf.append(payload)
+        buffered += len(payload)
+        n_rows += len(payload)
+        if buffered >= rows_per_group:
+            flush()
+    flush()
+    if first:
+        raise SubmissionError(f"no forecast blocks to write to {path}")
+    return n_rows

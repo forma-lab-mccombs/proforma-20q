@@ -31,7 +31,9 @@ def _default_suffix(tag: str | None = None) -> str:
 def cmd_download(args) -> int:
     from .download import download
     download(args.wrds_user, out_dir=args.out,
-             start_year=args.start_year, end_year=args.end_year)
+             start_year=args.start_year, end_year=args.end_year,
+             chunk_years=args.chunk_years,
+             columns=["*"] if args.all_columns else None)
     return 0
 
 
@@ -194,6 +196,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="data/raw")
     d.add_argument("--start-year", type=int, default=None)
     d.add_argument("--end-year", type=int, default=None)
+    d.add_argument("--chunk-years", type=int, default=1,
+                   help="pull comp.fundq in N-year chunks (default 1; 0 = one query). "
+                        "Chunks are cached under <out>/../raw_chunks so an "
+                        "interrupted pull resumes")
+    d.add_argument("--all-columns", action="store_true",
+                   help="SELECT f.* instead of the 82-column projection "
+                        "(~7.9x more data; ~100 GB peak over 1970-2024)")
     d.set_defaults(func=cmd_download)
 
     b = sub.add_parser("build", help="download (if needed) + process + verify checksums")

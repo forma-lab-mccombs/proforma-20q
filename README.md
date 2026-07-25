@@ -81,6 +81,23 @@ If you already have the raw panel, skip the download:
 proforma20q build --raw data/raw/compustat_with_permno.parquet
 ```
 
+**What it costs.** Measured on the canonical 1970–2024 panel (1,531,703 × 655),
+`--which tabular --reg-stats canonical`, on a 34 GB Windows workstation:
+
+| stage | peak RSS | wall |
+|---|---|---|
+| raw load + prep (YTD → computed items → scale) | 4.5 GB | ~20 s |
+| wide-matrix build (1,173,598 × 2,547) | 13.7 GB | ~3 min |
+| writing the three splits (~6.7 GB of parquet) | 20.3 GB | ~12 min |
+
+The download pulls **82 of `comp.fundq`'s 648 columns** — the ones the benchmark
+consumes — and does it in one-year chunks by default, cached under
+`data/raw_chunks/` so an interrupted pull resumes. `--chunk-years 0` issues a
+single query instead; `--all-columns` restores the old `SELECT f.*` (~7.9× more
+data, ~100 GB peak over 1970–2024 — it does not complete on an ordinary
+machine). `build --raw` applies the same projection when reading the panel, so
+an existing `SELECT f.*` parquet costs no more than a projected one.
+
 ### 2. Reproduce the reference baselines (optional but recommended)
 
 ```bash

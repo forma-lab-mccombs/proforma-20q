@@ -23,12 +23,57 @@ Notes:
   as `prediction − {target}_level_0`.
 - Write with **`engine="fastparquet"`** (never pyarrow). The helper
   `proforma20q.schema.write_forecast` does this and downcasts the float payload
-  to float32.
+  to float32; for a full-coverage submission use
+  `proforma20q.schema.write_forecast_blocks` instead (see *How big a submission
+  is*).
 - The internal Forma column names `firm_id` / `quarter` / `forecast_horizon` are
   accepted as aliases and normalized on read, so research-repo forecast files
   score without conversion.
 - One row per `(firm, target, origin, horizon)`. Duplicates keep the first;
   missing cells are simply absent (they drop out of the common sample).
+
+## How big a submission is
+
+Plan for the size before you write the file. On the canonical build the test
+split has **352,106 firm-quarters**, so **full coverage is**
+
+```
+352,106 origins × 78 targets × 20 horizons = 549,285,360 rows
+```
+
+≈ **4 GB on disk** (float32 predictions; ~6 GB with `sigma`) and **> 20 GB in
+memory** if you materialize it as one frame — enough to raise
+`ArrayMemoryError` on an ordinary machine. Partial coverage is allowed (missing
+cells simply drop out of the common sample), so a subset of targets or horizons
+is a legitimate, much smaller entry — but do not plan a full-coverage run around
+a single in-memory frame.
+
+**Write it in blocks.** `proforma20q.schema.write_forecast_blocks` takes any
+iterable of submission-schema frames — typically one per `(target, horizon)` —
+validates each and appends it as a parquet row-group, so peak memory is the
+buffer (a few hundred MB) rather than the submission:
+
+```python
+from proforma20q.schema import write_forecast_blocks
+
+def blocks(test_origins, model):
+    for target in TARGETS:                       # 78
+        for h in range(1, 21):                   # 20
+            yield pd.DataFrame({
+                "firm":       test_origins["firm"].to_numpy(),
+                "target":     target,
+                "origin":     test_origins["origin"].to_numpy(),
+                "horizon":    h,
+                "prediction": model.predict(test_origins, target, h),
+            })
+
+n = write_forecast_blocks(blocks(test_origins, model), "my_forecasts.parquet")
+```
+
+The shipped baselines use exactly this path
+(`proforma20q.baselines.iter_baseline_blocks` → `write_forecast_blocks`).
+`proforma20q validate` reads the finished file and does the full check,
+including the cross-block duplicate-key scan that the streamed writer skips.
 
 ## Density family (probabilistic track)
 
