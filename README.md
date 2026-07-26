@@ -181,34 +181,69 @@ reproduction instructions.
 ## Reproducing the canonical build
 
 Compustat is **revised over time**, so a fresh WRDS pull today will not be
-bit-identical to the canonical snapshot. We therefore:
+bit-identical to the canonical snapshot.
 
-1. **Pin the environment.** For a rebuild against pinned dependencies, install
-   the lockfile:
+> **Bit-for-bit md5 equality with `checksums.json` is not achievable, and is not
+> the target.** Three independent reasons, none removable by pinning
+> dependencies: the canonical artifacts were written by a *different
+> implementation* (the internal research repo) that agrees with this one to
+> float32 epsilon rather than exactly; that implementation emits rows in a
+> different order — `(year, firm, quarter)` vs `(firm, quarter)` here — and both
+> file md5s and per-column hashes are position-sensitive; and Compustat is
+> revised. Earlier releases presented md5 equality as the primary check. It never
+> could have passed. **The supported check is the drift report below.**
+
+1. **Pin the environment.** For a rebuild against pinned dependencies:
    ```bash
    pip install -r requirements-lock.txt
    ```
-   It pins the **direct** dependencies (no hashes; transitive deps float), so it
-   reproduces the build to float precision rather than guaranteeing bit-for-bit
-   identical bytes — use `report-drift` (below) to quantify any residual
-   environment/vintage drift.
+   It pins the **direct** dependencies (no hashes; transitive deps float), so two
+   people on the same Compustat vintage get the same numbers. It is *not* the
+   environment that produced the canonical artifacts — see the file's own header.
 2. **Pin the query.** The exact WRDS SQL lives in `src/proforma20q/download.py`;
    the sample window and filters are in `src/proforma20q/configs/task.yaml`.
-3. **Publish hashes, not data.** `src/proforma20q/checksums.json` holds the md5s
-   of the canonical artifacts (plus per-column hashes of the regularized tabular
-   columns). `proforma20q build` verifies them automatically.
-4. **Quantify drift instead of hard-failing.** If your vintage differs:
+3. **Pin the target space.** Build with `--reg-stats canonical` so your targets
+   are normalized against the published R13 statistics rather than re-estimated
+   from your own vintage — see [Which reg-stats?](#which-reg-stats-the-flag-that-changes-your-ground-truth).
+4. **Publish statistics, not data.** `src/proforma20q/checksums.json` holds file
+   md5s plus, per tabular artifact, the row/column counts and a **per-column
+   distribution summary** (coverage, mean, sd, p05/p50/p95 of the regularized
+   values). Six aggregate scalars over a 600,000-row column reveal nothing
+   firm-level — and unlike a hash, they are *comparable*.
+5. **Check drift, with a verdict.**
    ```bash
-   proforma20q build --report-drift        # or: proforma20q report-drift
+   proforma20q report-drift                       # vs the published statistics
+   proforma20q report-drift --reference <dir>     # vs a build you already trust
    ```
-   reports, per artifact, the fraction of columns that diverge from the canonical
-   checksums — so you can see *how much* your Compustat vintage moved without ever
-   needing (or exposing) the canonical data.
+   For each artifact it reports the row-count delta and the worst per-column
+   move in mean, sd and coverage, then returns **PASS/FAIL** against documented
+   thresholds and **exits non-zero on FAIL**.
+
+   | threshold | value |
+   |---|---|
+   | split row count, relative | ≤ 1% |
+   | per column, \|Δ mean\| (z units) | ≤ 0.05 |
+   | per column, \|Δ sd\| (z units) | ≤ 0.05 |
+   | per column, \|Δ coverage\| (fraction finite) | ≤ 0.02 |
+
+   Calibration, measured: the same task built by this package versus the internal
+   builder off the same panel gives **0 of 2,497 columns out of tolerance**
+   (worst \|Δ mean\| 1e-06, row delta 0); a build off a *synthetic* panel gives
+   **290–317 of 321 columns out of tolerance** (worst \|Δ mean\| 1.39, rows −99%).
+   The thresholds sit between those by five orders of magnitude. A genuine
+   7-week vintage difference moved split row counts by 0.01% / 0.07% / 0.24%,
+   comfortably inside the 1% row bound.
+
+   > The **previous** metric — the fraction of per-column *hashes* that differ —
+   > read **100.0% for both** of those cases, because one changed cell in 1.17M
+   > flips a whole column's hash. It is retained only for an old
+   > `checksums.json`, is labelled as not a drift measure, and never decides
+   > pass/fail.
 
 **Definition of done for a reproduction:** a fresh machine + WRDS login →
-`build` completes → checksums match (or the drift report explains the delta) →
-`evaluate` on the shipped baseline forecasts reproduces the published
-naive / fade / ElasticNet numbers.
+`build --reg-stats canonical` completes → `report-drift` returns **PASS** (exit
+0) → `evaluate` on the shipped baseline forecasts reproduces the published
+naive / fade / ElasticNet numbers on the Full-sample mask.
 
 ---
 

@@ -69,9 +69,13 @@ def test_write_verify_roundtrip(tmp_path):
     assert rep["all_match"] is True
 
     drift = report_drift(proc, SUFFIX, published=published)
+    assert drift["_pass"] is True
     for name, r in drift.items():
-        if "frac_diff" in r:
-            assert r["frac_diff"] == 0.0
+        if name.startswith("_"):
+            continue
+        if "n_cols_over_threshold" in r:
+            assert r["n_cols_over_threshold"] == 0
+            assert r["worst_abs_mean_delta"] == 0.0
             assert r["file_md5_match"] is True
 
 
@@ -101,9 +105,11 @@ def test_drift_empty_processed_reports_all_missing(tmp_path):
     empty = tmp_path / "processed"
     empty.mkdir()
     drift = report_drift(empty, SUFFIX, published=published)
-    assert drift, "empty build must not yield an empty drift report"
-    assert set(drift) == set(published["artifacts"])
-    assert all(r.get("status") == "missing" for r in drift.values())
+    artifacts = {k: v for k, v in drift.items() if not k.startswith("_")}
+    assert artifacts, "empty build must not yield an empty drift report"
+    assert set(artifacts) == set(published["artifacts"])
+    assert all(r.get("status") == "missing" for r in artifacts.values())
+    assert drift["_pass"] is False
 
 
 def test_drift_partial_build_mixes_missing_and_reported(tmp_path):
@@ -121,8 +127,9 @@ def test_drift_partial_build_mixes_missing_and_reported(tmp_path):
     shutil.copy(ref / only, proc / only)
 
     drift = report_drift(proc, SUFFIX, published=published)
-    assert "frac_diff" in drift[only] and drift[only]["file_md5_match"] is True
-    missing = [n for n, r in drift.items() if r.get("status") == "missing"]
+    assert drift[only]["n_cols_over_threshold"] == 0 and drift[only]["file_md5_match"] is True
+    missing = [n for n, r in drift.items()
+               if not n.startswith("_") and r.get("status") == "missing"]
     assert missing and only not in missing
 
 
@@ -157,6 +164,9 @@ def test_drift_detects_changed_values(tmp_path):
     assert verify_checksums(proc, SUFFIX, published=published)["all_match"] is False
     drift = report_drift(proc, SUFFIX, published=published)
     test_entry = drift[f"tabular_test__{SUFFIX}.parquet"]
-    assert test_entry["n_diff"] >= 1
-    assert test_entry["frac_diff"] > 0.0
+    assert test_entry["n_cols_over_threshold"] >= 1
+    assert test_entry["worst_abs_mean_delta"] > 0.5      # a whole z unit moved
+    assert test_entry["worst_abs_mean_delta_col"] == "niq_level_0"
+    assert test_entry["pass"] is False
     assert test_entry["file_md5_match"] is False
+    assert drift["_pass"] is False

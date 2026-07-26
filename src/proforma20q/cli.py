@@ -101,8 +101,8 @@ def cmd_build(args) -> int:
 
     suffix = _default_suffix(args.tag)
     if args.report_drift:
-        _print_drift(args.out, suffix)
-    elif not args.no_verify:
+        return _print_drift(args.out, suffix, args.reference)
+    if not args.no_verify:
         _print_verify(args.out, suffix)
     return 0
 
@@ -182,7 +182,7 @@ def cmd_validate(args) -> int:
 
 
 def cmd_report_drift(args) -> int:
-    return _print_drift(args.processed, _default_suffix(args.tag))
+    return _print_drift(args.processed, _default_suffix(args.tag), args.reference)
 
 
 # --------------------------------------------------------------------------- #
@@ -200,32 +200,62 @@ def _print_verify(processed_dir, suffix) -> None:
     print(f"  ALL MATCH: {rep['all_match']}")
 
 
-def _print_drift(processed_dir, suffix) -> int:
-    from .checksums import report_drift
-    rep = report_drift(processed_dir, suffix)
-    if rep.get("_note"):
-        print(f"\nDrift report: {rep['_note']}")
-        return 0
+def _print_drift(processed_dir, suffix, reference=None) -> int:
+    from .checksums import reference_record, report_drift
+
+    published = reference_record(reference, suffix) if reference else None
+    rep = report_drift(processed_dir, suffix, published)
+    artifacts = {k: v for k, v in rep.items() if not k.startswith("_")}
     # A published artifact with no local file reads as "missing"; anything else
     # is a file that exists on disk. Zero local files == nothing was built, which
     # must be an explicit error, not a green (empty) "no drift" report.
-    present = [name for name, r in rep.items() if r.get("status") != "missing"]
+    present = [name for name, r in artifacts.items() if r.get("status") != "missing"]
     if not present:
+        if rep.get("_note") and not artifacts:
+            print(f"\nDrift report: {rep['_note']}")
+            return 0
         print(f"no built artifacts found under {processed_dir} -- run `proforma20q build` "
               f"first", file=sys.stderr)
         return 2
-    print("\n=== Vintage-drift report (vs canonical checksums) ===")
-    for name, r in rep.items():
+
+    against = f"reference build {reference}" if reference else "canonical checksums"
+    print(f"\n=== Vintage-drift report (vs {against}) ===")
+    for name, r in artifacts.items():
         status = r.get("status")
         if status in ("missing", "extra"):
             print(f"  {status:>9}  {name}")
+            continue
+        if "n_cols_over_threshold" in r:
+            verdict = "PASS" if r["pass"] else "FAIL"
+            print(f"  [{verdict}] {name}")
+            print(f"      rows {r['row_count_delta']:+,} ({r['row_count_delta_frac']:.3%}); "
+                  f"{r['n_cols_over_threshold']}/{r['n_cols']} columns beyond tolerance")
+            print(f"      worst |delta mean| {r['worst_abs_mean_delta']:.2e} "
+                  f"({r['worst_abs_mean_delta_col']}), "
+                  f"|delta sd| {r['worst_abs_sd_delta']:.2e}, "
+                  f"|delta coverage| {r['worst_abs_coverage_delta']:.2e}; "
+                  f"median |delta mean| {r['median_abs_mean_delta']:.2e}")
+            if r["cols_over_threshold"]:
+                print(f"      first offenders: {', '.join(r['cols_over_threshold'])}")
         elif "frac_diff" in r:
             print(f"  {name}: {r['n_diff']}/{r['n_cols']} cols diverge "
-                  f"({r['frac_diff']:.1%}); file md5 match={r['file_md5_match']}; "
-                  f"row delta={r['row_count_delta']}")
+                  f"({r['frac_diff']:.1%}) -- hash metric, not a drift measure; "
+                  f"rows {r.get('row_count_delta', 0):+,}")
         else:
             print(f"  {name}: file md5 match={r.get('file_md5_match')}")
-    return 0
+
+    if rep.get("_note"):
+        print(f"\n  NOTE: {rep['_note']}")
+    if rep.get("_pass") is None:
+        print("  VERDICT: indeterminate (no comparable statistic published)")
+        return 0
+    th = rep["_thresholds"]
+    print(f"\n  thresholds: rows <= {th['max_row_delta_frac']:.1%}, "
+          f"per-column |delta mean| <= {th['max_abs_mean_delta']}, "
+          f"|delta sd| <= {th['max_abs_sd_delta']}, "
+          f"|delta coverage| <= {th['max_abs_coverage_delta']}")
+    print(f"  VERDICT: {'PASS' if rep['_pass'] else 'FAIL'}")
+    return 0 if rep["_pass"] else 1
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +292,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "pass 'canonical' to use the bundled published R13 reg-stats")
     b.add_argument("--which", default="tabular,tuple")
     b.add_argument("--report-drift", action="store_true",
-                   help="quantify divergence from the canonical checksums instead of bit-verify")
+                   help="quantify divergence from the canonical checksums instead of bit-verify; "
+                        "exits non-zero if the divergence exceeds the published thresholds")
+    b.add_argument("--reference", default=None,
+                   help="compare against a reference build directory instead of the "
+                        "published checksums")
     b.add_argument("--no-verify", action="store_true")
     b.set_defaults(func=cmd_build)
 
@@ -296,6 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("report-drift", help="vintage divergence of a build vs canonical checksums")
     r.add_argument("--processed", default="data/processed")
     r.add_argument("--tag", default=None)
+    r.add_argument("--reference", default=None,
+                   help="compare against a reference build directory instead of the "
+                        "published checksums")
     r.set_defaults(func=cmd_report_drift)
 
     return p

@@ -1,18 +1,37 @@
-# Pinned environment for the canonical build.
+# Pinned environment for running THIS package's build reproducibly.
 #
-# `pip install -r requirements-lock.txt` reproduces the environment that produced
-# the artifacts whose md5s are published in src/proforma20q/checksums.json. The
-# looser deps in pyproject.toml are enough to SCORE forecasts and run the
-# baselines on a modern stack; this lockfile is what a reviewer uses to reproduce
-# the data build to float precision (per the paper's "one command rebuilds the
-# exact data environment").
+# WHAT THIS IS. `pip install -r requirements-lock.txt` pins the direct
+# dependencies of the release code, so two people building from the same
+# Compustat vintage get the same numbers. Transitive deps float; there are no
+# hashes. The looser deps in pyproject.toml are enough to SCORE forecasts and run
+# the baselines on any modern stack.
 #
-# Frozen from the canonical build machine (Python 3.12.4, Windows).
-# NOTE: the canonical build uses a modern numpy-2 / pandas-2 stack (this is the
-# environment that produced the published checksums). Feature-column imputation
-# uses scipy.linalg.eigh, whose last-bit results can differ across BLAS/LAPACK
-# builds; the scored TARGET columns reproduce to float32 precision regardless.
-# Use `proforma20q report-drift` to quantify any per-column vintage/env drift.
+# WHAT THIS IS NOT. It is not the environment that produced the canonical
+# artifacts whose md5s are in src/proforma20q/checksums.json. Those came from the
+# internal research repo, which pins the OPPOSITE stack -- `pandas<1.6`,
+# `numpy<2.0`, the latter annotated "THE CRITICAL FIX" in its requirements.txt.
+# A previous version of this header claimed this lockfile reproduced that
+# environment. It did not, and no lockfile can.
+#
+# DO NOT EXPECT FILE-LEVEL md5 EQUALITY against checksums.json. Three independent
+# reasons, none of which a pinned dependency can remove:
+#   1. The canonical artifacts were written by a different implementation. It
+#      agrees with this one to float32 epsilon -- max |delta| 5.7e-06 over 8.9M
+#      co-present cells, 0 NaN-pattern differences -- not bit-for-bit.
+#   2. That implementation also emits rows in a different ORDER: (year, firm,
+#      quarter) there, (firm, quarter) here. File md5s and per-column hashes are
+#      both position-sensitive, and row order is not part of the task definition.
+#   3. Compustat is revised continuously, so a fresh pull is a different vintage
+#      whatever the environment.
+#
+# THE SUPPORTED CHECK is `proforma20q report-drift`, which compares published
+# per-column distribution statistics against your build and returns PASS/FAIL
+# against documented thresholds. See README, "Reproducing the canonical build".
+#
+# Frozen from the audit machine (Python 3.12.4, Windows). Feature-column
+# imputation uses scipy.linalg.eigh, whose last-bit results depend on the
+# BLAS/LAPACK build and on input memory layout; the scored TARGET columns
+# reproduce to float32 precision regardless.
 
 numpy==2.3.2
 pandas==2.2.3

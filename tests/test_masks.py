@@ -78,6 +78,70 @@ def test_mask_to_keys_addressing_matches_grid(tmp_path):
     assert pd.Timestamp(row["origin"]) == pd.Timestamp(tn["origin"].iloc[wide_row])
 
 
+def test_keys_mask_survives_vintage_drift_and_bits_mask_does_not(tmp_path):
+    """The point of I-6. A rebuild one test row short of the canonical grid
+    cannot use the grid-aligned mask at all -- it is a bitmap over an exact row
+    set -- while the keys mask matches by value and simply intersects."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=25, n_q=5, seed=4)
+    truth_path = tmp_path / "truth.parquet"
+    truth.to_parquet(truth_path, index=False)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[::3] = True
+    keys = bmask.mask_to_keys(mask, grid, truth_path)
+
+    # a later vintage: one test row disappears
+    drifted = truth.iloc[1:].reset_index(drop=True)
+    fc = forecast_from_truth(drifted, noise=0.3, seed=2)
+
+    with pytest.raises(ValueError, match="VINTAGE DRIFT"):
+        evaluate_forecasts({"m": fc}, drifted, sample_mask=np.packbits(mask), verbose=False)
+
+    res = evaluate_forecasts({"m": fc}, drifted, sample_mask=keys, verbose=False)
+    assert res.n_common > 0
+    # exactly the masked cells that still exist in the drifted grid
+    dropped = truth["firm"].iloc[0], pd.Timestamp(truth["origin"].iloc[0])
+    survivors = keys[~((keys["firm"] == dropped[0]) &
+                       (pd.to_datetime(keys["origin"]) == dropped[1]))]
+    assert res.n_common == len(survivors)
+
+
+def test_bits_to_keys_conversion_needs_only_the_truth(tmp_path):
+    """`--from-bits` produces the portable mask from the already-published bit
+    array plus the canonical tabular_test -- no forecast, which is the artifact
+    deferred to publication."""
+    truth = synthetic_truth(n_firms=12, n_q=4, seed=11)
+    truth_path = tmp_path / "truth.parquet"
+    truth.to_parquet(truth_path, index=False)
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[[0, 5, 17, grid.n_cells - 1]] = True
+    bits_path = tmp_path / "bits.npy"
+    np.save(bits_path, np.packbits(mask))
+
+    rc = bmask.main(["--from-bits", str(bits_path), "--truth", str(truth_path),
+                     "--out", str(tmp_path / "out"), "--expect", "4"])
+    assert rc == 0
+    keys = pd.read_parquet(tmp_path / "out" / "full_sample_mask_keys.parquet")
+    assert len(keys) == 4
+    pd.testing.assert_frame_equal(
+        keys.reset_index(drop=True),
+        bmask.mask_to_keys(mask, grid, truth_path).reset_index(drop=True))
+
+    # a mask built against a different grid is refused, not silently sliced
+    other = synthetic_truth(n_firms=13, n_q=4, seed=11)
+    other_path = tmp_path / "other.parquet"
+    other.to_parquet(other_path, index=False)
+    with pytest.raises(SystemExit, match="only converts against the SAME"):
+        bmask.main(["--from-bits", str(bits_path), "--truth", str(other_path),
+                    "--out", str(tmp_path / "out2")])
+
+
 def test_download_artifacts_md5_guard_and_pins(tmp_path):
     dl = _load_script("download_artifacts.py")
     # md5sum matches hashlib
