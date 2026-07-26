@@ -36,8 +36,23 @@ _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 
 # Canonical Compustat query filters (configs/task.yaml -> universe).
 _COMPUSTAT_FILTERS = {"indfmt": "INDL", "datafmt": "STD", "consol": "C", "popsrc": "D"}
+# CRSP link filters. These are part of the SAMPLE DEFINITION (the merge drops
+# 6.1% of rows, and the dropped firms are ~7x smaller by median assets), so the
+# authoritative copy lives in task.yaml under `universe.crsp_link`. These
+# constants are the fallback for a task.yaml that predates that block.
 _CCM_LINKTYPE = ("LU", "LC")
 _CCM_LINKPRIM = ("P", "C")
+_CCM_TABLE = "crsp.ccmxpf_lnkhist"
+
+
+def crsp_link_config() -> dict:
+    """The CRSP link filter, from ``task.yaml`` (falling back to the constants)."""
+    cfg = load_task_config().get("universe", {}).get("crsp_link", {}) or {}
+    return {
+        "table": cfg.get("table", _CCM_TABLE),
+        "linktype": tuple(cfg.get("linktype", _CCM_LINKTYPE)),
+        "linkprim": tuple(cfg.get("linkprim", _CCM_LINKPRIM)),
+    }
 
 # Postgres declared type -> the dtype a fully-populated column would arrive as.
 _PG_NUMERIC = ("double precision", "real", "numeric", "decimal",
@@ -377,12 +392,18 @@ def download(
             print(f"Sector filter SIC [{rng['start']},{rng['end']}]: {n0} -> {len(compustat_df)}")
 
         # -- CRSP-Compustat link table --
-        print("Downloading CRSP-Compustat link table...")
-        lt = "', '".join(_CCM_LINKTYPE)
-        lp = "', '".join(_CCM_LINKPRIM)
+        # Part of the sample definition: the merge below drops ~6.1% of rows and
+        # the dropped firms are ~7x smaller by median assets. See
+        # task.yaml -> universe.crsp_link.
+        link_cfg = crsp_link_config()
+        print(f"Downloading CRSP-Compustat link table ({link_cfg['table']}, "
+              f"linktype {'/'.join(link_cfg['linktype'])}, "
+              f"linkprim {'/'.join(link_cfg['linkprim'])})...")
+        lt = "', '".join(link_cfg["linktype"])
+        lp = "', '".join(link_cfg["linkprim"])
         link_df = db.raw_sql(f"""
             SELECT *
-            FROM crsp.ccmxpf_lnkhist
+            FROM {link_cfg['table']}
             WHERE linktype IN ('{lt}') AND linkprim IN ('{lp}')
         """)
     finally:

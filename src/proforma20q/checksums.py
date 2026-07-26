@@ -310,6 +310,15 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
         return {"_note": "published checksums are unpopulated; nothing to compare against",
                 "_pass": None}
     thresholds = dict(DRIFT_THRESHOLDS, **(thresholds or {}))
+    pub_suffix = published.get("suffix")
+    if pub_suffix and pub_suffix != suffix:
+        # Comparing a differently-tagged build against the published artifacts
+        # would report every one of them "missing" and FAIL, which says nothing
+        # about drift.
+        return {"_note": (f"this build is tagged '{suffix}' but the reference is "
+                          f"'{pub_suffix}'; there is nothing to compare. Rebuild with "
+                          f"the canonical tag (omit --tag) to check drift."),
+                "_pass": None}
     pub = published.get("artifacts", {})
     present = artifact_paths(processed_dir, suffix)  # existing files only
     report: dict = {"_thresholds": thresholds}

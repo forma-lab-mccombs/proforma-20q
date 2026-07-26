@@ -16,8 +16,12 @@ import yaml
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 REFERENCE_DIR = Path(__file__).resolve().parent / "reference"
 
+# The published canonical dataset tag. `--tag` names an OUTPUT dataset and is
+# free-form; this is the tag whose regularization statistics ship in reference/.
+CANONICAL_TAG = "r13_node_optionD_indfe_val8"
 
-def canonical_reg_stats_path(tag: str = "r13_node_optionD_indfe_val8") -> Path:
+
+def canonical_reg_stats_path(tag: str = CANONICAL_TAG) -> Path:
     """Path to the bundled canonical ``regularization_stats`` artifact.
 
     Passing this (or ``--reg-stats canonical``) to the build pins the target /

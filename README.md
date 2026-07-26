@@ -61,14 +61,87 @@ Use `pip install -e .[wrds]` if you only need the data build, or
 
 ---
 
+## Before you start: data access and preconditions
+
+ProForma-20Q is a **protocol, not a dataset**. Every artifact is rebuilt from
+your own Compustat licence, so the benchmark cannot be run at all without the
+access below.
+
+| source | used for | required? |
+|---|---|---|
+| WRDS account | all data access, via the [`wrds`](https://pypi.org/project/wrds/) client | **yes** |
+| Compustat Fundamentals Quarterly (`comp.fundq`) | the 78 statement items | **yes** |
+| Compustat `comp.co_industry` | SIC/NAICS → FF48 industry dummies, and the financial-sector exclusion | **yes** |
+| CRSP `crsp.ccmxpf_lnkhist` (CCM link table) | **defines the benchmark sample** — see [The CRSP link filter](#the-crsp-link-filter) | **yes** |
+
+> **CRSP is not optional.** The link merge removes firm-quarters outside a valid
+> link window, which is part of the published sample definition. Skipping it
+> yields a larger, systematically different universe whose scores are **not
+> comparable** to the leaderboard.
+
+### Step 0 — authenticate to WRDS
+
+Do this first, and verify it, before running anything else.
+
+**1. Install the client:** `pip install -e .[wrds]`
+
+**2. Create a `pgpass` file** so the build is non-interactive. The path is
+platform-specific — the POSIX one is not the only one:
+
+| platform | path |
+|---|---|
+| Linux / macOS | `~/.pgpass` (must be `chmod 600`) |
+| **Windows** | `%APPDATA%\postgresql\pgpass.conf` |
+
+One line, five colon-delimited fields:
+
+```
+wrds-pgdata.wharton.upenn.edu:9737:wrds:<your_wrds_username>:<your_wrds_password>
+```
+
+**3. ⚠ Expect Duo two-factor — even with a valid `pgpass` file.** A `pgpass`
+supplies your *password*; it does not satisfy WRDS's second factor. Connecting
+may send a **Duo push to your phone that you must approve**.
+
+> **Do not retry a failed connection in a loop.** Repeated authentication
+> attempts without a Duo response cause **WRDS to deactivate the account**, which
+> takes a support ticket to undo. If a connection fails, stop and fix the cause.
+>
+> Duo may *not* prompt on every connection — device-trust windows mean an
+> authentication can succeed silently now and require a push later, from a new
+> machine or IP. **One silent success does not mean 2FA is not enforced.**
+
+`proforma20q download` makes exactly one connection attempt per run and never
+retries. If you are driving this repo programmatically, read
+[AGENTS.md](AGENTS.md) first.
+
+**4. Verify once:**
+
+```bash
+python -c "import wrds; db = wrds.Connection(wrds_username='<user>'); print(db.raw_sql('select count(*) from comp.fundq limit 1')); db.close()"
+```
+
+### What you can do *without* credentials
+
+Works: `pip install -e .[dev]` and the full test suite (105 tests, all
+synthetic); `proforma20q validate <file>`; `proforma20q evaluate <file> --truth
+examples/example_truth.parquet`; reading `task.yaml` / `feature_sets.yaml`;
+verifying `artifacts/full_sample_mask_bits.npy` against its manifest.
+
+Requires credentials, no workaround: `proforma20q build` and therefore every
+real artifact, any leaderboard number, `report-drift`, and `evaluate
+--sample-mask` against the Full-sample mask.
+
+---
+
 ## Quickstart
 
 ### 1. Build the data (needs WRDS)
 
 ```bash
 proforma20q build --wrds-user <your_wrds_user>
-# -> prompts for your WRDS password (via ~/.pgpass or the wrds client)
-# -> downloads Compustat+CRSP, processes both views, verifies checksums
+# -> authenticates ONCE (see Step 0; expect a Duo push)
+# -> downloads Compustat+CRSP, processes both views, reports drift
 ```
 
 This writes the tabular and tuple artifacts to `data/processed/`. The
@@ -97,6 +170,58 @@ single query instead; `--all-columns` restores the old `SELECT f.*` (~7.9× more
 data, ~100 GB peak over 1970–2024 — it does not complete on an ordinary
 machine). `build --raw` applies the same projection when reading the panel, so
 an existing `SELECT f.*` parquet costs no more than a projected one.
+
+### Which reg-stats? — the flag that changes your ground truth
+
+`--reg-stats` selects the statistics that define the **regularized target
+space**, i.e. the ground truth you are scored against. It is not a tuning knob:
+
+| value | meaning |
+|---|---|
+| `canonical` **(default)** | pin the published R13 statistics shipped in `src/proforma20q/reference/`. Your targets are the leaderboard's targets. |
+| `estimate` | re-estimate `mu`/`sigma`/`k` from *your* panel's train split. A different ground truth — scores are **not comparable** to anything published. |
+| *a path* | pin an explicit `regularization_stats__*.parquet`. |
+
+Building twice from an identical panel and toggling only this flag gave **0.0%
+of target cells identical** and a mean |Δz| of 0.83 in a space clamped to
+|z| ≤ 6, plus a 6-row change in the train split. (That magnitude was measured on
+a synthetic panel whose scale distribution is unlike Compustat, so 0.83
+overstates the real gap — the mechanism and the row-count change are real
+regardless.) Two researchers both "following the README" would otherwise score
+against different truth and produce non-comparable numbers, which is why the
+default is pinned and the build prints which space it used.
+
+### The CRSP link filter
+
+`download` merges the CRSP-Compustat link table (`crsp.ccmxpf_lnkhist`,
+`linktype ∈ {LU, LC}`, `linkprim ∈ {P, C}`) and keeps only firm-quarters whose
+`datadate` falls inside a valid link window. **This is part of the sample
+definition**, declared in
+[`task.yaml → universe.crsp_link`](src/proforma20q/configs/task.yaml).
+
+Measured on a 1970–2024 pull: **101,736 → 95,538 rows (−6.1%)**, 595 gvkeys
+removed. The dropped firms are systematically smaller — about **7× smaller by
+median assets** (101.7 vs 703.8) and **4.4× by median revenue** (14.3 vs 63.1) —
+so omitting the merge does not just add rows, it adds a size-biased tail of
+firms that the published sample never contained.
+
+The column it attaches, `permno`, is **never read downstream**. The row filter is
+the point, and it is kept for comparability with the published sample. (The
+output file is named `compustat_with_permno.parquet` after the column that does
+not matter rather than the filter that does; the name is retained for
+compatibility with existing pipelines.)
+
+### A third of the sample has no industry
+
+FF48 comes from each firm's modal `sich`. On the canonical build **18,648 of
+41,595 firms (44.8%)** map to `unknown`, so **494,970 rows (32.3%)** carry
+all-zero `indff48_*` dummies. That is defensible — `unknown` is the dropped
+reference level, so those rows sit at the intercept — but the industry block is
+identically zero for a third of the data, which is worth knowing before you
+build a model around it. Relatedly, the financial-sector exclusion keeps rows
+with a *missing* `sich` (`missing != financial`), so ~7.8% of the final sample is
+financial by NAICS. Both behaviours match the upstream research pipeline and are
+documented in `task.yaml`.
 
 ### 2. Reproduce the reference baselines
 

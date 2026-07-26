@@ -133,6 +133,51 @@ def test_drift_partial_build_mixes_missing_and_reported(tmp_path):
     assert missing and only not in missing
 
 
+def test_drift_against_a_reference_build(tmp_path):
+    """`--reference <dir>` compares against a build you already trust, and the
+    statistic separates a same-panel rebuild from a different one. This is the
+    property the old per-column-hash metric did not have: it read ~100%
+    diverged for both."""
+    from proforma20q.checksums import reference_record
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    published = reference_record(ref, SUFFIX)
+
+    same = tmp_path / "same"
+    same.mkdir()
+    _make_processed(same)                       # same seeds -> same values
+    ok = report_drift(same, SUFFIX, published=published)
+    assert ok["_pass"] is True
+
+    other = tmp_path / "other"
+    other.mkdir()
+    for split, seed in (("train", 91), ("val", 92), ("test", 93)):   # different data
+        _tabular_frame(seed).to_parquet(
+            other / f"tabular_{split}__{SUFFIX}.parquet", engine=PARQUET_ENGINE, index=False)
+    bad = report_drift(other, SUFFIX, published=published)
+    assert bad["_pass"] is False
+    entry = bad[f"tabular_test__{SUFFIX}.parquet"]
+    assert entry["n_cols_over_threshold"] > 0
+    assert entry["worst_abs_mean_delta"] > 0.05
+
+
+def test_drift_refuses_to_compare_a_differently_tagged_build(tmp_path):
+    """Reporting every published artifact "missing" and FAILing says nothing
+    about drift; it has to say the tags do not match."""
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    out = tmp_path / "checksums.json"
+    write_checksums(ref, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    published = json.loads(out.read_text(encoding="utf-8"))
+
+    rep = report_drift(ref, "pf_full__some_other_tag", published=published)
+    assert rep["_pass"] is None
+    assert "nothing to compare" in rep["_note"]
+
+
 def test_report_drift_cli_exits_2_on_empty_machine(tmp_path, capsys):
     """`proforma20q report-drift` on a machine with no build exits 2 with an
     explicit message (consistent with build/evaluate missing-data behavior),

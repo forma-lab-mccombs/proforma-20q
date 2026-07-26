@@ -22,10 +22,10 @@ from .config import load_task_config
 
 
 def _default_suffix(tag: str | None = None) -> str:
+    from .config import CANONICAL_TAG
     task = load_task_config()
     fs = task["benchmark"]["feature_set"]
-    tag = tag or "r13_node_optionD_indfe_val8"
-    return f"{fs}__{tag}"
+    return f"{fs}__{tag or CANONICAL_TAG}"
 
 
 # --------------------------------------------------------------------------- #
@@ -90,10 +90,31 @@ def cmd_build(args) -> int:
                   file=sys.stderr)
             return 1
 
+    # --reg-stats decides the TARGET SPACE, i.e. the ground truth you will be
+    # scored against. Two builds off one panel differing only in this flag share
+    # ~0% of target cells. It therefore has an explicit default (canonical) and
+    # announces which space is in use rather than deciding silently.
     reg_stats = args.reg_stats
-    if reg_stats == "canonical":
-        from .config import canonical_reg_stats_path
-        reg_stats = canonical_reg_stats_path(args.tag or "r13_node_optionD_indfe_val8")
+    if reg_stats == "estimate":
+        reg_stats = None
+        print("Reg-stats: RE-ESTIMATING from this panel's train split. Your targets "
+              "will NOT be comparable to the published numbers -- pass "
+              "--reg-stats canonical for that.")
+    elif reg_stats == "canonical":
+        from .config import CANONICAL_TAG, canonical_reg_stats_path
+        # `--tag` names the OUTPUT dataset; the canonical statistics are a fixed
+        # published artifact. Only look for a tag-specific one if it exists,
+        # otherwise pin the published R13 set -- building a differently-tagged
+        # dataset in the published target space is a legitimate thing to want.
+        reg_stats = canonical_reg_stats_path(args.tag or CANONICAL_TAG)
+        if not Path(reg_stats).exists():
+            reg_stats = canonical_reg_stats_path(CANONICAL_TAG)
+            if not Path(reg_stats).exists():
+                print(f"No canonical regularization statistics bundled at {reg_stats}; "
+                      f"pass --reg-stats estimate or an explicit path.", file=sys.stderr)
+                return 2
+        print(f"Reg-stats: PINNED to the published canonical statistics "
+              f"({Path(reg_stats).name}).")
 
     which = tuple(w.strip() for w in args.which.split(",") if w.strip())
     build(raw_path, out_dir=args.out, dataset_tag=args.tag, which=which,
@@ -286,10 +307,12 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--raw", default="data/raw/compustat_with_permno.parquet")
     b.add_argument("--out", default="data/processed")
     b.add_argument("--tag", default=None, help="dataset tag (default: canonical R13 tag)")
-    b.add_argument("--reg-stats", default=None,
-                   help="normalize against a FROZEN regularization_stats parquet instead of "
-                        "re-estimating (pins the target/eval space across Compustat vintages); "
-                        "pass 'canonical' to use the bundled published R13 reg-stats")
+    b.add_argument("--reg-stats", default="canonical",
+                   help="which regularization statistics define the TARGET SPACE. "
+                        "'canonical' (default) pins the published R13 statistics, so your "
+                        "targets match the leaderboard's; 'estimate' re-estimates them from "
+                        "your own train split, which produces a DIFFERENT ground truth and "
+                        "non-comparable scores; or a path to a regularization_stats parquet")
     b.add_argument("--which", default="tabular,tuple")
     b.add_argument("--report-drift", action="store_true",
                    help="quantify divergence from the canonical checksums instead of bit-verify; "

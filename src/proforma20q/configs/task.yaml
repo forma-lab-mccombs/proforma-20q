@@ -29,9 +29,39 @@ universe:
     consol: C                     # consolidated
     popsrc: D                     # domestic
   # Financial-sector exclusion (standard in empirical finance).
+  #
+  # Note the exact predicate, which is deliberate and load-bearing:
+  #     sich.isna() | ~sich.between(start, end)
+  # i.e. a MISSING sich is KEPT ("missing != financial"). `sich` is absent on
+  # ~46.5% of raw rows (100% in the 1970s), so ~7.8% of the final sample is
+  # financial by NAICS. This matches the upstream research pipeline; changing it
+  # to drop missing-sich rows would define a different, smaller universe.
   sector_exclusions:
     sic_ranges:
       - { start: 6000, end: 6999 }
+
+  # ---------------------------------------------------------------------------
+  # CRSP-Compustat link (crsp.ccmxpf_lnkhist). THIS IS PART OF THE SAMPLE
+  # DEFINITION, not an enrichment step -- which is why it lives here rather than
+  # only in download.py.
+  #
+  # The merge attaches `permno` and keeps only firm-quarters whose datadate falls
+  # inside a valid link window. Measured effect on a 1970-2024 pull:
+  # 101,736 -> 95,538 rows (-6.1%), 595 gvkeys removed entirely. The dropped
+  # firms are systematically smaller -- ~7x by median assets (101.7 vs 703.8) and
+  # ~4.4x by median revenue (14.3 vs 63.1) -- so skipping the merge yields a
+  # LARGER, size-biased universe whose scores are not comparable to the
+  # leaderboard.
+  #
+  # `permno` itself is never read downstream. The row filter is the point, and it
+  # is retained for comparability with the published sample.
+  #
+  # CRSP entitlement is therefore REQUIRED, not optional.
+  crsp_link:
+    table: "crsp.ccmxpf_lnkhist"
+    linktype: [LU, LC]            # link types kept (primary / research-quality)
+    linkprim: [P, C]              # primary link markers kept
+    impose_link_dates: true       # keep rows with linkdt <= datadate <= linkenddt
 
 # ---------------------------------------------------------------------------
 # Splits -- by CALENDAR time. train_end_year also moves the reg-stats

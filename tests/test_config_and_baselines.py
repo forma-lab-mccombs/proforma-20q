@@ -25,6 +25,32 @@ def test_task_config_matches_paper():
     assert task["feature_engineering"]["yoy_changes"] == 8
 
 
+def test_crsp_link_filter_is_declared_in_the_task_definition():
+    """The CCM link merge drops 6.1% of rows and the dropped firms are ~7x
+    smaller by median assets -- it is part of the sample definition, so it has to
+    live in the file the README calls the single source of truth, not only as
+    module constants in download.py."""
+    from proforma20q.download import _CCM_LINKPRIM, _CCM_LINKTYPE, crsp_link_config
+
+    block = load_task_config()["universe"]["crsp_link"]
+    assert block["linktype"] == ["LU", "LC"]
+    assert block["linkprim"] == ["P", "C"]
+    assert block["table"] == "crsp.ccmxpf_lnkhist"
+    # the download reads the config, and it agrees with the historical constants
+    cfg = crsp_link_config()
+    assert cfg["linktype"] == _CCM_LINKTYPE and cfg["linkprim"] == _CCM_LINKPRIM
+
+
+def test_build_defaults_to_the_canonical_target_space():
+    """`--reg-stats` decides the ground truth: two builds off one panel that
+    differ only in this flag share ~0% of target cells. The default must be the
+    published space, and the CLI must say which one it used."""
+    from proforma20q.cli import build_parser
+
+    args = build_parser().parse_args(["build"])
+    assert args.reg_stats == "canonical"
+
+
 def test_baselines_cli_missing_build_exits_2(tmp_path, capsys):
     """`proforma20q baselines` with no build prints a clean one-liner and exits 2
     (like build/evaluate), not a raw traceback."""
