@@ -89,6 +89,52 @@ def test_write_read_round_trip(tmp_path):
     assert back["prediction"].dtype == np.float32
 
 
+def test_submission_md_minimal_example_round_trips(tmp_path):
+    """The verbatim SUBMISSION.md example, then the next documented command.
+
+    `pd.Timestamp("2011-12-31")` is datetime64[s] under pandas >= 2.2;
+    fastparquet stored it as TIMESTAMP[MILLIS] while recording
+    `numpy_type: datetime64[s]`, and the read failed with
+    "Cannot losslessly cast '1325289 ms' to s". Every other fixture in this
+    suite builds origins via `period_range(...).to_timestamp(how="end")` --
+    nanosecond EOQ, which dodges the bug -- so nothing caught it."""
+    fc = pd.DataFrame({
+        "firm":       ["001045", "001045", "001045"],
+        "target":     ["niq",    "niq",    "revtq"],
+        "origin":     pd.Timestamp("2011-12-31"),
+        "horizon":    [1, 2, 1],
+        "prediction": [0.42, 0.55, -1.13],
+        "sigma":      [0.8, 0.9, 0.7],
+    })
+    assert fc["origin"].dtype == "datetime64[s]"     # the input that broke it
+    p = tmp_path / "my_forecasts.parquet"
+    write_forecast(fc, p)
+
+    back = read_forecast(p, validate=True, strict=True)
+    assert len(back) == 3
+    assert back["origin"].dtype == "datetime64[ns]"
+    assert (back["origin"] == pd.Timestamp("2011-12-31")).all()
+
+    from proforma20q.cli import main
+    assert main(["validate", str(p)]) == 0
+
+
+@pytest.mark.parametrize("origin", [
+    pd.Timestamp("2011-12-31"),                                   # datetime64[s]
+    pd.Period("2011Q4", freq="Q"),                                # Period[Q]
+    pd.Timestamp("2011-12-31").as_unit("ms"),                     # millisecond
+    pd.Period("2011Q4", freq="Q").to_timestamp(how="end"),        # nanosecond EOQ
+])
+def test_every_accepted_origin_form_round_trips(tmp_path, origin):
+    fc = pd.DataFrame({"firm": ["001045"], "target": ["niq"], "origin": [origin],
+                       "horizon": [1], "prediction": [0.42]})
+    p = tmp_path / "fc.parquet"
+    write_forecast(fc, p)
+    back = read_forecast(p, validate=True, strict=True)
+    assert back["origin"].dtype == "datetime64[ns]"
+    assert back["origin"].iloc[0].year == 2011 and back["origin"].iloc[0].quarter == 4
+
+
 def _blocks(fc):
     """Split a forecast into (target, horizon) blocks, the streaming unit."""
     return [g for _k, g in fc.groupby(["target", "horizon"], sort=False)]
@@ -234,6 +280,29 @@ def test_sigma_underflow_in_float32_is_rejected(tmp_path):
     fc = _valid_fc().assign(sigma=1e-50)
     with pytest.raises(SubmissionError, match="underflow"):
         write_forecast(fc, tmp_path / "fc.parquet")
+
+
+def test_validate_warns_about_coverage_and_raw_units(tmp_path):
+    """A forecast that is 40% inf shrinks the scored sample for EVERY model it is
+    compared against, and a raw-dollar submission scores as noise. Both are
+    schema-valid, so both have to be warnings the user actually sees."""
+    from proforma20q.cli import main
+    from proforma20q.schema import forecast_warnings
+
+    fc = _valid_fc()
+    holed = fc.copy()
+    holed.loc[holed.index[: int(len(fc) * 0.4)], "prediction"] = np.inf
+    warns = forecast_warnings(holed)
+    assert any("non-finite" in w and "shrinking it for every model" in w for w in warns)
+
+    dollars = fc.assign(prediction=fc["prediction"] * 1e6)
+    assert any("regularized space" in w for w in forecast_warnings(dollars))
+    assert forecast_warnings(fc) == []
+
+    # ... and the CLI surfaces them while still exiting 0 (the file IS valid)
+    p = tmp_path / "holed.parquet"
+    write_forecast(holed, p, validate=False)
+    assert main(["validate", str(p)]) == 0
 
 
 def test_file_validation_streams_by_row_group(tmp_path):

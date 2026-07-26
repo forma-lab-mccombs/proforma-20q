@@ -41,6 +41,12 @@ HORIZON_COL = "horizon"
 PREDICTION_COL = "prediction"
 SIGMA_COL = "sigma"
 
+# The build clamps every regularized value to |z| <= max_abs_zscore. A forecast
+# is allowed to overshoot a little (a model may extrapolate past the clamp), but
+# an order of magnitude past it means the submission is not in this space at all.
+_MAX_ABS_Z = 6.0
+_OUT_OF_RANGE_FACTOR = 10.0
+
 REQUIRED_COLS = [FIRM_COL, TARGET_COL, ORIGIN_COL, HORIZON_COL, PREDICTION_COL]
 OPTIONAL_COLS = [SIGMA_COL]
 KEY_COLS = [FIRM_COL, TARGET_COL, ORIGIN_COL, HORIZON_COL]
@@ -163,6 +169,46 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True,
     return problems
 
 
+def forecast_warnings(df: pd.DataFrame) -> list[str]:
+    """Advisory checks: schema-valid files that will still score badly or hurt
+    others. Separate from :func:`validate_forecast` because none of these make a
+    file invalid -- partial coverage is explicitly allowed.
+    """
+    warnings: list[str] = []
+    if PREDICTION_COL not in df.columns:
+        return warnings
+    arr = pd.to_numeric(df[PREDICTION_COL], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan)
+    if not arr.size:
+        return warnings
+
+    # Non-finite predictions do not just cost YOU coverage: `evaluate` scores on
+    # the strict all-models common sample, so a submission that is 40% inf
+    # silently shrinks the scored sample for EVERY model it is compared against
+    # (demonstrated in the audit: 16,000 -> 9,600 cells).
+    n_bad = int((~np.isfinite(arr)).sum())
+    if n_bad:
+        warnings.append(
+            f"{n_bad:,} of {arr.size:,} predictions ({n_bad / arr.size:.1%}) are "
+            "non-finite; they drop out of the common sample, shrinking it for "
+            "every model scored alongside yours")
+
+    # Predictions live in the regularized space (|z| <= 6). A submission in raw
+    # currency units validates as numeric and then scores as noise -- the most
+    # likely newcomer error, so name it instead of letting it through.
+    finite = arr[np.isfinite(arr)]
+    if finite.size:
+        worst = float(np.abs(finite).max())
+        if worst > _MAX_ABS_Z * _OUT_OF_RANGE_FACTOR:
+            n_out = int((np.abs(finite) > _MAX_ABS_Z).sum())
+            warnings.append(
+                f"predictions reach |{worst:.4g}|, far outside the regularized range "
+                f"|z| <= {_MAX_ABS_Z:g} ({n_out:,} value(s) beyond it). Forecasts must be "
+                "in the build's regularized space, not raw currency units -- see "
+                "SUBMISSION.md")
+    return warnings
+
+
 def validate_forecast_file(path, *, strict: bool = False) -> tuple[list[str], int]:
     """Validate a forecast parquet **without loading it**, row-group by row-group.
 
@@ -175,14 +221,29 @@ def validate_forecast_file(path, *, strict: bool = False) -> tuple[list[str], in
     row-groups are not detected -- that would need a 550M-key index. Writers that
     emit one row-group per ``(target, horizon)`` block cannot produce them.
 
-    Returns ``(problems, n_rows)``.
+    Returns ``(problems, n_rows)``. Advisory warnings (coverage, out-of-range
+    magnitudes) are returned by :func:`forecast_file_warnings`.
     """
+    problems, n_rows, _warn = _scan_forecast_file(path)
+    if strict and problems:
+        raise SubmissionError("; ".join(problems))
+    return problems, n_rows
+
+
+def forecast_file_warnings(path) -> list[str]:
+    """Advisory warnings for a forecast file, accumulated over its row-groups."""
+    return _scan_forecast_file(path)[2]
+
+
+def _scan_forecast_file(path) -> tuple[list[str], int, list[str]]:
     import fastparquet  # noqa: PLC0415
 
     pf = fastparquet.ParquetFile(str(path))
     problems: list[str] = []
     n_rows = 0
-    any_finite = False
+    n_nonfinite = 0
+    worst = 0.0
+    n_out_of_range = 0
     for i, group in enumerate(pf.iter_row_groups()):
         group = normalize_columns(group)
         n_rows += len(group)
@@ -192,16 +253,31 @@ def validate_forecast_file(path, *, strict: bool = False) -> tuple[list[str], in
             if msg not in problems:
                 problems.append(msg)
         if PREDICTION_COL in group.columns:
-            any_finite = any_finite or bool(
-                np.isfinite(pd.to_numeric(group[PREDICTION_COL], errors="coerce")
-                            .to_numpy(dtype=float)).any())
+            arr = pd.to_numeric(group[PREDICTION_COL], errors="coerce").to_numpy(
+                dtype="float64", na_value=np.nan)
+            ok = np.isfinite(arr)
+            n_nonfinite += int((~ok).sum())
+            if ok.any():
+                worst = max(worst, float(np.abs(arr[ok]).max()))
+                n_out_of_range += int((np.abs(arr[ok]) > _MAX_ABS_Z).sum())
+
+    warnings: list[str] = []
     if n_rows == 0:
         problems.append("file contains no rows")
-    elif not any_finite:
+    elif n_nonfinite == n_rows:
         problems.append(f"{PREDICTION_COL} is null / non-finite in every row")
-    if strict and problems:
-        raise SubmissionError("; ".join(problems))
-    return problems, n_rows
+    elif n_nonfinite:
+        warnings.append(
+            f"{n_nonfinite:,} of {n_rows:,} predictions ({n_nonfinite / n_rows:.1%}) are "
+            "non-finite; they drop out of the common sample, shrinking it for every "
+            "model scored alongside yours")
+    if worst > _MAX_ABS_Z * _OUT_OF_RANGE_FACTOR:
+        warnings.append(
+            f"predictions reach |{worst:.4g}|, far outside the regularized range "
+            f"|z| <= {_MAX_ABS_Z:g} ({n_out_of_range:,} value(s) beyond it). Forecasts "
+            "must be in the build's regularized space, not raw currency units -- see "
+            "SUBMISSION.md")
+    return problems, n_rows, warnings
 
 
 def read_forecast(path, *, validate: bool = True, strict: bool = False) -> pd.DataFrame:
@@ -212,10 +288,16 @@ def read_forecast(path, *, validate: bool = True, strict: bool = False) -> pd.Da
     """
     df = pd.read_parquet(path, engine=PARQUET_ENGINE)
     df = normalize_columns(df)
+    # Read side of the same normalization: a file written by another tool may
+    # still carry a second- or millisecond-resolution origin.
+    if ORIGIN_COL in df.columns and pd.api.types.is_datetime64_any_dtype(df[ORIGIN_COL]):
+        df[ORIGIN_COL] = df[ORIGIN_COL].astype("datetime64[ns]")
     if validate:
         problems = validate_forecast(df, strict=strict)
         if problems and not strict:
             print(f"  Warning: {path}: {'; '.join(problems)}")
+        for w in forecast_warnings(df):
+            print(f"  Warning: {path}: {w}")
     return df
 
 
@@ -231,11 +313,22 @@ def _forecast_payload(df: pd.DataFrame) -> pd.DataFrame:
 
     # origin: Period[Q] is an accepted input form; the on-disk form is the
     # quarter-end timestamp, matching the truth file's `quarter`.
+    #
+    # The `[ns]` cast is load-bearing, not tidiness. `pd.Timestamp("2011-12-31")`
+    # is `datetime64[s]` under pandas >= 2.2; fastparquet stores that as
+    # TIMESTAMP[MILLIS] while recording `numpy_type: datetime64[s]`, and pandas
+    # then refuses the lossy read with
+    #     Cannot losslessly cast '1325289 ms' to s
+    # -- so the SUBMISSION.md example wrote a file this package could not read
+    # back. Every fixture in the suite happened to build origins via
+    # `period_range(...).to_timestamp(how="end")`, which is nanosecond EOQ and
+    # dodges it, which is why CI stayed green.
     origin = out[ORIGIN_COL]
     if isinstance(origin.dtype, pd.PeriodDtype):
-        out[ORIGIN_COL] = origin.dt.to_timestamp(how="end")
+        origin = origin.dt.to_timestamp(how="end")
     else:
-        out[ORIGIN_COL] = pd.to_datetime(origin)
+        origin = pd.to_datetime(origin)
+    out[ORIGIN_COL] = origin.astype("datetime64[ns]")
 
     if HORIZON_COL in out.columns and out[HORIZON_COL].notna().all():
         out[HORIZON_COL] = out[HORIZON_COL].astype("int64")

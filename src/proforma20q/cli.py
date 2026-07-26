@@ -7,8 +7,9 @@
     proforma20q validate  my_forecasts.parquet        # submission-schema check
     proforma20q report-drift                          # vintage divergence vs canonical checksums
 
-Nothing WRDS-derived ships with the package; a build needs the user's own WRDS
-credentials (see README).
+No firm-level WRDS-derived data ships with the package (the bundled canonical
+regularization statistics are aggregate per-(feature, quarter) moments); a build
+needs the user's own WRDS credentials (see README).
 """
 from __future__ import annotations
 
@@ -28,13 +29,44 @@ def _default_suffix(tag: str | None = None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# The `wrds` client surfaces a bad/absent credential as a bare EOFError from the
+# input() prompt it falls back to, or as an OperationalError from psycopg2. Both
+# reach the user as a traceback that says nothing about credentials.
+_AUTH_ERRORS = (EOFError, KeyboardInterrupt)
+_AUTH_HINT = (
+    "WRDS authentication failed.\n"
+    "  - check the username, and that your pgpass file exists and is readable:\n"
+    "      Linux/macOS  ~/.pgpass                      (chmod 600)\n"
+    "      Windows      %APPDATA%\\postgresql\\pgpass.conf\n"
+    "  - WRDS enforces Duo 2FA even with a valid pgpass: a connection may need\n"
+    "    you to approve a push.\n"
+    "  - DO NOT re-run this in a loop. Repeated attempts without a Duo response\n"
+    "    cause WRDS to deactivate the account. Resolve the cause, then retry once."
+)
+
+
+def _auth_failed(e: BaseException) -> bool:
+    if isinstance(e, _AUTH_ERRORS):
+        return True
+    text = f"{type(e).__name__}: {e}".lower()
+    return any(k in text for k in
+               ("password", "authentication", "pgpass", "no such user", "role \""))
+
+
 def cmd_download(args) -> int:
     from .download import download
-    download(args.wrds_user, out_dir=args.out,
-             start_year=args.start_year, end_year=args.end_year,
-             intermediate_dir=args.intermediate_dir,
-             chunk_years=args.chunk_years,
-             columns=["*"] if args.all_columns else None)
+    try:
+        download(args.wrds_user, out_dir=args.out,
+                 start_year=args.start_year, end_year=args.end_year,
+                 intermediate_dir=args.intermediate_dir,
+                 chunk_years=args.chunk_years,
+                 columns=["*"] if args.all_columns else None)
+    except Exception as e:  # noqa: BLE001
+        if not _auth_failed(e):
+            raise
+        print(f"{_AUTH_HINT}\n  (underlying error: {type(e).__name__}: {e})",
+              file=sys.stderr)
+        return 1
     return 0
 
 
@@ -49,7 +81,14 @@ def cmd_build(args) -> int:
                   file=sys.stderr)
             return 2
         from .download import download
-        raw_path = download(args.wrds_user, out_dir=raw_path.parent)
+        try:
+            raw_path = download(args.wrds_user, out_dir=raw_path.parent)
+        except Exception as e:  # noqa: BLE001
+            if not _auth_failed(e):
+                raise
+            print(f"{_AUTH_HINT}\n  (underlying error: {type(e).__name__}: {e})",
+                  file=sys.stderr)
+            return 1
 
     reg_stats = args.reg_stats
     if reg_stats == "canonical":
@@ -122,16 +161,19 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_validate(args) -> int:
-    from .schema import validate_forecast_file
+    from .schema import _scan_forecast_file
     # Streamed by row-group: a full-coverage submission is ~550M rows / ~73 GB
     # as a frame, so validation cannot start by reading the file.
     try:
-        problems, n_rows = validate_forecast_file(args.forecast, strict=False)
+        problems, n_rows, warnings = _scan_forecast_file(args.forecast)
     except Exception as e:  # noqa: BLE001
         print(f"FAILED to read {args.forecast}: {e}", file=sys.stderr)
         return 2
+    for w in warnings:
+        print(f"  WARNING: {w}", file=sys.stderr)
     if not problems:
-        print(f"OK: {args.forecast} conforms to the submission schema ({n_rows:,} rows).")
+        print(f"OK: {args.forecast} conforms to the submission schema ({n_rows:,} rows)"
+              + (f", with {len(warnings)} warning(s)." if warnings else "."))
         return 0
     print(f"INVALID: {args.forecast}", file=sys.stderr)
     for p in problems:

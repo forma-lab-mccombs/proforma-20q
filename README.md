@@ -98,15 +98,21 @@ data, ~100 GB peak over 1970–2024 — it does not complete on an ordinary
 machine). `build --raw` applies the same projection when reading the panel, so
 an existing `SELECT f.*` parquet costs no more than a projected one.
 
-### 2. Reproduce the reference baselines (optional but recommended)
+### 2. Reproduce the reference baselines
+
+Do this before trusting your own model's score — it is how you find out whether
+your build reproduces the published numbers. **Run the two cheap ones first**;
+the linear family takes the better part of a day (see
+[Reference baselines](#reference-baselines)).
 
 ```bash
-proforma20q baselines            # writes results/forecasts/{naive,fade,elasticnet,linear}__predictions.parquet
+proforma20q baselines --which naive,fade      # ~17 min, ~11 GB peak
 proforma20q evaluate --against baselines --out results/metrics
 ```
 
-Confirm your build reproduces the published baseline numbers before trusting your
-own model's score.
+```bash
+proforma20q baselines                          # adds elasticnet + linear: hours
+```
 
 ### 3. Score your model
 
@@ -134,20 +140,21 @@ print(result.leaderboard("r2"))
 
 ## Reference baselines
 
-They anchor the leaderboard and let you verify your pipeline. `naive` and `fade`
-are near-instant; `linear` and especially `elasticnet` are heavier (see the note
-below), so for a quick end-to-end pipeline check run just the fast two:
+They anchor the leaderboard and let you verify your pipeline.
+
+| baseline     | what it is | cost at canonical scale |
+|--------------|------------|-------------------------|
+| `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. | measured: naive+fade together **17 min / 11 GB peak**, writing two 549,285,360-row forecasts (3.5 GB each) |
+| `fade`       | pooled AR(1) / fade-to-mean — one `(ρ_h, b_h)` per horizon, pooled across items and firms. | ″ |
+| `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. | **hours.** Measured one refit at canonical train size (578,831 × 985): 5.3 s at h=1, 1.8 s at h=20 → ~1–2 h for the 1,560 refits, plus ~1 h for the 840-fit CV grid (42 combos × 20 horizons) |
+| `linear`     | plain OLS per (target, horizon). | **the most expensive of the four, not the cheapest.** Measured one fit at canonical train size: 32.5 s at h=1, 15.2 s at h=20 → **7–14 h** for 1,560 fits. OLS solves by SVD; coordinate descent with an L1 penalty is ~6× faster here |
+
+Both linear-family baselines peaked at ~10 GB RSS in that measurement. For a
+quick end-to-end pipeline check, run just the fast two:
 
 ```bash
 proforma20q baselines --which naive,fade
 ```
-
-| baseline     | what it is |
-|--------------|------------|
-| `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. |
-| `fade`       | pooled AR(1) / fade-to-mean — one `(ρ_h, b_h)` per horizon, pooled across items and firms. |
-| `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. **Not cheap:** the CV is 42 `(alpha, l1_ratio)` combos × 20 horizons plus 1,560 refits. In the audit it ran ~40 min wall / ~4.3 GB RAM on a 150-firm *synthetic* panel; real Compustat has roughly 60× the firms, so budget memory and time accordingly (or skip it with `--which naive,fade`). |
-| `linear`     | plain OLS per (target, horizon). |
 
 **The Forma model is not included** — it is released separately.
 

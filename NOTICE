@@ -8,5 +8,8 @@ the License at http://www.apache.org/licenses/LICENSE-2.0
 This product includes the Fama-French 48 industry SIC classification derived
 from the Kenneth R. French Data Library.
 
-NO DATA IS DISTRIBUTED. WRDS / Compustat / CRSP credentials and license are the
-user's responsibility; see README.md.
+NO WRDS-DERIVED FIRM-LEVEL DATA IS DISTRIBUTED. The package does ship the
+published canonical regularization statistics (aggregate per-(feature, quarter)
+mu/sigma/k moments derived from Compustat, in src/proforma20q/reference/) and the
+Full-sample coverage bitmap (artifacts/). WRDS / Compustat / CRSP credentials and
+license are the user's responsibility; see README.md.

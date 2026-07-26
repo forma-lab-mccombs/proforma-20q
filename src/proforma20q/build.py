@@ -650,8 +650,23 @@ def _all_nan_rows(arr: np.ndarray, cols: np.ndarray, chunk: int = 32_768) -> np.
     return out
 
 
+def _progress(iterable, desc: str, *, enabled: bool, unit: str = "it"):
+    """tqdm when it is available and wanted, otherwise the plain iterable.
+
+    The build spends tens of minutes inside two loops; through a pipe, block
+    buffering turns that silence into something indistinguishable from a hang.
+    """
+    if not enabled:
+        return iterable
+    try:
+        from tqdm import tqdm  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - tqdm is a declared dependency
+        return iterable
+    return tqdm(iterable, desc=desc, unit=unit, leave=False)
+
+
 def _fill_tabular(panel: TabularPanel, reg_stats: pd.DataFrame, target_items: list[str],
-                  fe_cfg: dict, *, tabular_industry_fe: bool):
+                  fe_cfg: dict, *, tabular_industry_fe: bool, verbose: bool = False):
     """Allocate the wide float32 matrix once and fill it feature-by-feature.
 
     This is the memory-critical routine (port of the research repo's
@@ -714,13 +729,18 @@ def _fill_tabular(panel: TabularPanel, reg_stats: pd.DataFrame, target_items: li
     del pre
 
     n_rows = sel.size
+    if verbose:
+        print(f"  panel {len(panel):,} rows -> {n_rows:,} with a usable scale; "
+              f"allocating {n_rows:,} x {len(names)} float32 "
+              f"({n_rows * len(names) * 4 / 1e9:.1f} GB)", flush=True)
     arr = np.full((n_rows, len(names)), np.nan, dtype=np.float32)
     if with_scale:
         arr[:, col_idx["scale_level_0"]] = scale_lv0[sel]
         del scale_lv0
 
     max_lag = max(recent - 1, yoy - 1 + 4)
-    for item in panel.items:
+    for item in _progress(panel.items, "  regularizing", enabled=verbose,
+                          unit="item"):
         k_i = k_map.get(item, 1.0)
         mu_a, sg_a = stats.get(item, _missing)
         mu_i, sg_i = mu_a[qpos], sg_a[qpos]
@@ -773,7 +793,7 @@ def _fill_tabular(panel: TabularPanel, reg_stats: pd.DataFrame, target_items: li
 
 def _finish_tabular_block(arr, names, col_idx, firm_ids, qord, quarter, target_items,
                           fe_cfg, firm_ind, *, tabular_industry_fe, present_in_q0,
-                          firm_col, qcol) -> pd.DataFrame:
+                          firm_col, qcol, verbose: bool = False) -> pd.DataFrame:
     """Post-fill steps on an already-row-filtered block, in place on ``arr``.
 
     Mutating the array (not a wrapping frame) keeps every step allocation-free:
@@ -812,7 +832,8 @@ def _finish_tabular_block(arr, names, col_idx, firm_ids, qord, quarter, target_i
         n_factors = int(fe_cfg["imputation"].get("n_factors", 10))
         order = np.argsort(qord, kind="stable")
         bounds = np.flatnonzero(np.diff(qord[order])) + 1
-        for rows in np.split(order, bounds):
+        for rows in _progress(np.split(order, bounds), "  imputing",
+                              enabled=verbose, unit="quarter"):
             if rows.size < n_factors + 1:
                 continue
             block = arr[np.ix_(rows, impute_cols)]
@@ -890,6 +911,7 @@ def build_tabular_splits(
     *,
     tabular_industry_fe: bool = True,
     present_in_q0: bool = True,
+    verbose: bool = False,
 ):
     """Yield ``(split_name, frame)`` for train / val / test, one at a time.
 
@@ -901,7 +923,8 @@ def build_tabular_splits(
     """
     train_end, val_end = splits["train_end_year"], splits["val_end_year"]
     arr, names, col_idx, keep, sel = _fill_tabular(
-        panel, reg_stats, target_items, fe_cfg, tabular_industry_fe=tabular_industry_fe)
+        panel, reg_stats, target_items, fe_cfg,
+        tabular_industry_fe=tabular_industry_fe, verbose=verbose)
     year = panel.qord[sel] // 4
     for name, mask, end_year in (
         ("train", keep & (year <= train_end), train_end),
@@ -921,7 +944,7 @@ def build_tabular_splits(
             block, names, col_idx, panel.firm_ids[rows], panel.qord[rows],
             panel.quarter[rows], target_items, fe_cfg, firm_ind,
             tabular_industry_fe=tabular_industry_fe, present_in_q0=present_in_q0,
-            firm_col=panel.firm_col, qcol=panel.qcol)
+            firm_col=panel.firm_col, qcol=panel.qcol, verbose=verbose)
         yield name, df
         del df, block
         gc.collect()
@@ -1135,7 +1158,7 @@ def build(
         del raw
         gc.collect()
         for name, part in build_tabular_splits(
-                panel, reg_stats, target_items, fe, firm_ind, splits,
+                panel, reg_stats, target_items, fe, firm_ind, splits, verbose=verbose,
                 tabular_industry_fe=task["industry"]["tabular_industry_fe"],
                 present_in_q0=task["targets"]["present_in_q0"]):
             p = out_dir / f"tabular_{name}__{suffix}.parquet"
