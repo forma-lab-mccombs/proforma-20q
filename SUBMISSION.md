@@ -23,12 +23,79 @@ Notes:
   as `prediction − {target}_level_0`.
 - Write with **`engine="fastparquet"`** (never pyarrow). The helper
   `proforma20q.schema.write_forecast` does this and downcasts the float payload
-  to float32.
+  to float32; for a full-coverage submission use
+  `proforma20q.schema.write_forecast_blocks` instead (see *How big a submission
+  is*).
 - The internal Forma column names `firm_id` / `quarter` / `forecast_horizon` are
   accepted as aliases and normalized on read, so research-repo forecast files
   score without conversion.
 - One row per `(firm, target, origin, horizon)`. Duplicates keep the first;
   missing cells are simply absent (they drop out of the common sample).
+
+## How big a submission is
+
+Plan for the size before you write the file. On the canonical build the test
+split has **352,106 firm-quarters**, so **full coverage is**
+
+```
+352,106 origins × 78 targets × 20 horizons = 549,285,360 rows
+```
+
+Measured: **3.54 GB on disk** for the point track (float32 predictions; add
+~2 GB if you carry `sigma`), and **~73 GB as a single in-memory frame** — the
+`firm` and `target` string columns cost ~112 of the 132 bytes per row. Building
+it as one frame raises `ArrayMemoryError` well before that on an ordinary
+machine. Partial coverage is allowed (missing
+cells simply drop out of the common sample), so a subset of targets or horizons
+is a legitimate, much smaller entry — but do not plan a full-coverage run around
+a single in-memory frame.
+
+**Write it in blocks.** `proforma20q.schema.write_forecast_blocks` takes any
+iterable of submission-schema frames — typically one per `(target, horizon)` —
+validates each and appends it as a parquet row-group, so the forecast itself is
+never held in memory; what you pay for is your own model state plus a ~4M-row
+write buffer (a few hundred MB). Measured end to end, the shipped `naive` and
+`fade` baselines write their full 549,285,360-row forecasts at **11.2 GB peak**,
+nearly all of which is the tabular splits they read, not the forecast they
+write:
+
+```python
+from proforma20q.schema import write_forecast_blocks
+
+def blocks(test_origins, model):
+    for target in TARGETS:                       # 78
+        for h in range(1, 21):                   # 20
+            yield pd.DataFrame({
+                "firm":       test_origins["firm"].to_numpy(),
+                "target":     target,
+                "origin":     test_origins["origin"].to_numpy(),
+                "horizon":    h,
+                "prediction": model.predict(test_origins, target, h),
+            })
+
+n = write_forecast_blocks(blocks(test_origins, model), "my_forecasts.parquet")
+```
+
+The shipped baselines use exactly this path
+(`proforma20q.baselines.iter_baseline_blocks` → `write_forecast_blocks`).
+
+Two properties worth knowing:
+
+- **Every block is validated**, duplicate keys included. Rows accumulate in
+  `<name>.parquet.partial` and are renamed into place only when the last block
+  is written, so a run that dies at block 1,400 of 1,560 cannot leave a
+  well-formed parquet that would score as an intentional partial-coverage entry.
+- **`validate` and `evaluate` both stream the finished file row-group by
+  row-group** — neither loads it, since ~550M rows is ~73 GB as a frame,
+  dominated by the `firm` and `target` string columns. Measured: scoring a
+  full-scale submission against the canonical truth takes **7.3 min at 12.2 GB
+  peak**. `validate` checks every row-group in full but does **not** detect
+  duplicate keys that span two row-groups; a writer that emits one row-group per
+  `(target, horizon)` cannot produce them.
+
+Write your submission with **pandas categorical metadata** on `firm` and
+`target` if you can (`write_forecast_blocks` does). It costs nothing to read and
+keeps the string columns dictionary-encoded rather than widening to `object`.
 
 ## Density family (probabilistic track)
 

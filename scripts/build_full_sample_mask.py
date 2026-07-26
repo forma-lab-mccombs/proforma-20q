@@ -19,7 +19,9 @@ The mask ships in two interchangeable forms (see ``proforma20q evaluate
   canonical cell order) --- compact (~66 MB), contains no firm identifiers, but
   must be applied against the canonical ``tabular_test``;
 * a **keys** table (``mask_keys.parquet`` with ``firm,target,origin,horizon``)
-  --- portable / matches by value, larger.
+  --- portable / matches by value, larger. **This is the form that survives a
+  Compustat vintage:** the bit array is a bitmap over an exact row set, so a
+  rebuild that gains or loses a single test row cannot use it at all.
 
 Usage::
 
@@ -27,6 +29,15 @@ Usage::
         --forecast <...>/forma_fgrid__pf_full__test__predictions.parquet \
         --truth    data/processed/tabular_test__pf_full__r13_node_optionD_indfe_val8.parquet \
         --out      results/masks --keys --expect 327244429
+
+The keys form can also be produced from the already-published bit array, without
+the forecast (which is deferred to publication) --- the only other input is the
+canonical ``tabular_test`` the mask was built against::
+
+    python scripts/build_full_sample_mask.py \
+        --from-bits artifacts/full_sample_mask_bits.npy \
+        --truth     <canonical tabular_test>.parquet \
+        --out       artifacts --expect 327244429
 """
 from __future__ import annotations
 
@@ -97,9 +108,35 @@ def mask_to_keys(mask: np.ndarray, grid: TruthGrid, truth_path) -> pd.DataFrame:
     })
 
 
+def load_bits(bits_path, grid: TruthGrid) -> np.ndarray:
+    """Unpack a shipped grid-aligned mask against ``grid``, validating its size.
+
+    The packbits form is a bitmap over an exact row set, so it only unpacks
+    against the grid it was built on -- which is the whole reason the keys form
+    exists.
+    """
+    raw = np.load(bits_path)
+    packed_len = (grid.n_cells + 7) // 8
+    if raw.dtype == np.uint8 and raw.size == packed_len:
+        return np.unpackbits(raw)[:grid.n_cells].astype(bool)
+    if raw.size == grid.n_cells:
+        return raw.astype(bool)
+    raise SystemExit(
+        f"{bits_path} has {raw.size} entries; this truth's grid has {grid.n_cells} "
+        f"cells ({packed_len}-byte packbits expected). The grid-aligned mask is a "
+        f"bitmap over an exact row set -- it only converts against the SAME "
+        f"tabular_test it was built from.")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--forecast", required=True, help="binding model forecast (forma_fgrid ensemble)")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--forecast", help="binding model forecast (forma_fgrid ensemble)")
+    src.add_argument("--from-bits", dest="from_bits",
+                     help="convert an existing grid-aligned mask (e.g. the shipped "
+                          "artifacts/full_sample_mask_bits.npy) instead of rebuilding "
+                          "it from the forecast -- the only input needed is the "
+                          "canonical tabular_test it was built against")
     ap.add_argument("--truth", required=True, help="tabular_test artifact (eval ground truth)")
     ap.add_argument("--out", default="results/masks")
     ap.add_argument("--keys", action="store_true", help="also write the portable keys parquet")
@@ -108,19 +145,26 @@ def main(argv=None) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    mask, grid = build_mask(args.forecast, args.truth)
+    if args.from_bits:
+        truth = normalize_columns(pd.read_parquet(args.truth, engine=PARQUET_ENGINE))
+        grid = TruthGrid(truth)
+        mask = load_bits(args.from_bits, grid)
+        del truth
+    else:
+        mask, grid = build_mask(args.forecast, args.truth)
     n = int(mask.sum())
     if args.expect is not None and n != args.expect:
         raise SystemExit(f"mask has {n:,} cells, expected {args.expect:,}")
 
-    bits_path = out / "full_sample_mask_bits.npy"
-    np.save(bits_path, np.packbits(mask))
-    md5 = hashlib.md5(Path(bits_path).read_bytes()).hexdigest()
-    print(f"wrote {bits_path} ({n:,} cells)  md5={md5}")
-    if args.keys:
+    if not args.from_bits:
+        bits_path = out / "full_sample_mask_bits.npy"
+        np.save(bits_path, np.packbits(mask))
+        md5 = hashlib.md5(Path(bits_path).read_bytes()).hexdigest()
+        print(f"wrote {bits_path} ({n:,} cells)  md5={md5}")
+    if args.keys or args.from_bits:
         keys_path = out / "full_sample_mask_keys.parquet"
         mask_to_keys(mask, grid, args.truth).to_parquet(keys_path, index=False)
-        print(f"wrote {keys_path}")
+        print(f"wrote {keys_path} ({n:,} cells)")
     return 0
 
 

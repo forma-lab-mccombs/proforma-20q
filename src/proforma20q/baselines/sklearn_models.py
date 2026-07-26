@@ -23,9 +23,9 @@ from sklearn.model_selection import GridSearchCV, PredefinedSplit
 from .common import (
     discover_targets,
     feature_columns,
+    forecast_block,
     parse_target_col,
     target_columns,
-    wide_predictions_to_long,
 )
 
 # Canonical R13 ElasticNet grid (configs/r13_baselines.yaml).
@@ -70,19 +70,24 @@ def _search_hparams(Xtr, ytr, Xval, yval, grid) -> dict:
     return gs.best_params_
 
 
-def fit_predict_sklearn(
+def iter_sklearn_blocks(
     model_type: str,
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     *,
     val_df: pd.DataFrame | None = None,
     targets: list[str] | None = None,
+    target_cols: list[str] | None = None,
     verbose: bool = True,
-) -> pd.DataFrame:
-    """Fit a linear-family baseline and return its forecast (submission schema)."""
+):
+    """Fit a linear-family baseline, yielding one ``(target, horizon)`` block as
+    each model finishes -- nothing wider than a single prediction column is ever
+    held. (Also retires the old column-at-a-time ``pred_wide`` insert loop, which
+    fragmented the frame into 1,560 blocks and buried the hyperparameter log
+    under ``PerformanceWarning``.)"""
     targets = targets or discover_targets(test_df)
     feat_cols = feature_columns(train_df)
-    tcols = target_columns(train_df, targets)
+    tcols = target_columns(train_df, targets) if target_cols is None else target_cols
     horizons = sorted({parse_target_col(c)[1] for c in tcols})
     log = print if verbose else (lambda *a, **k: None)
 
@@ -109,7 +114,6 @@ def fit_predict_sklearn(
     if len(X_test) == 0:
         raise ValueError("no test rows survive NaN-feature dropping")
 
-    pred_wide = pd.DataFrame(index=X_test.index)
     for col in tcols:
         item, h = parse_target_col(col)
         Xtr, ytr = _xy(train_df, feat_cols, col)
@@ -125,10 +129,24 @@ def fit_predict_sklearn(
             params = {"alpha": 1.0, "l1_ratio": 0.5} if model_type == "elasticnet" else {}
             X_fit, y_fit = Xtr, ytr
         if len(X_fit) == 0:
-            pred_wide[col] = np.nan
+            yield forecast_block(test_meta, np.full(len(X_test), np.nan), item, h)
             continue
         est = _make_estimator(model_type, **params)
         est.fit(X_fit, y_fit)
-        pred_wide[col] = est.predict(X_test)
+        yield forecast_block(test_meta, est.predict(X_test), item, h)
 
-    return wide_predictions_to_long(test_meta, pred_wide, tcols)
+
+def fit_predict_sklearn(
+    model_type: str,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    *,
+    val_df: pd.DataFrame | None = None,
+    targets: list[str] | None = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Fit a linear-family baseline and return its forecast (submission schema)."""
+    return pd.concat(
+        iter_sklearn_blocks(model_type, train_df, test_df, val_df=val_df,
+                            targets=targets, verbose=verbose),
+        ignore_index=True)

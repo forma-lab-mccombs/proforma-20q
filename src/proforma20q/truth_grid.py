@@ -1,9 +1,16 @@
 """Canonical truth grid + per-forecast residual arrays.
 
-Ported from the Forma research repo's ``src/eval_cache.py``, minus the on-disk
-memmap machinery (the public benchmark works in memory). The math -- key
+Ported from the Forma research repo's ``src/eval_cache.py``. The math -- key
 canonicalization, cell addressing, and ``residual = prediction - actual`` -- is
 identical, so metrics match the research pipeline.
+
+The research repo streams block-by-block from a memmap; this one keeps the
+residual arrays in memory (a dense float32 per model), but it does **not**
+require the forecast file in memory: :func:`build_residual_from_path` consumes a
+submission one parquet row-group at a time. That matters because a full-coverage
+submission is hundreds of millions of rows -- reading one as a frame needs tens
+of GB and was, until it streamed, enough to make the benchmark's own headline
+artifact unscoreable on ordinary hardware.
 
 The wide truth frame enumerates every scoreable ``(firm, origin)`` row exactly
 once. With the discovered target list and the sorted horizon list H, every
@@ -183,6 +190,128 @@ class TruthGrid:
                     continue
                 start = (t_id * self.n_h + h_idx) * self.n_wide
                 yield target, int(h), slice(start, start + self.n_wide), act, baseline
+
+
+class _ResidualAccumulator:
+    """Scatters forecast chunks into the dense residual / sigma arrays.
+
+    Holds a ``seen`` bitmap so "duplicate keys keep the FIRST occurrence" means
+    the same thing across row-group boundaries as it does within one frame --
+    ``isnan(residual)`` cannot stand in for it, because a legitimate prediction
+    may itself be NaN.
+    """
+
+    def __init__(self, grid: TruthGrid, has_sigma: bool):
+        self.grid = grid
+        self.residual = np.full(grid.n_cells, np.nan, dtype=np.float32)
+        self.sigma = np.full(grid.n_cells, np.nan, dtype=np.float32) if has_sigma else None
+        self.seen = np.zeros(grid.n_cells, dtype=bool)
+        self.n_rows = self.n_unmatched = self.n_dup = 0
+
+    def add(self, chunk: pd.DataFrame) -> None:
+        grid = self.grid
+        self.n_rows += len(chunk)
+        row_id, valid = grid.map_forecast_rows(chunk)
+        self.n_unmatched += int((~valid).sum())
+        if not valid.any():
+            return
+
+        rid = row_id[valid]
+        pred = pd.to_numeric(chunk[PREDICTION_COL], errors="coerce").to_numpy(np.float64)[valid]
+        sig = None
+        if self.sigma is not None and SIGMA_COL in chunk.columns:
+            sig = pd.to_numeric(chunk[SIGMA_COL], errors="coerce").to_numpy(np.float64)[valid]
+
+        # keep='first', within this chunk and against everything already written
+        dup = pd.Series(rid).duplicated().to_numpy() | self.seen[rid]
+        if dup.any():
+            self.n_dup += int(dup.sum())
+            keep = ~dup
+            rid, pred = rid[keep], pred[keep]
+            if sig is not None:
+                sig = sig[keep]
+            if rid.size == 0:
+                return
+        self.seen[rid] = True
+
+        blk = rid // grid.n_wide
+        wide_row = rid - blk * grid.n_wide
+        order = np.argsort(blk, kind="stable")
+        rid_s, blk_s, wr_s, pred_s = rid[order], blk[order], wide_row[order], pred[order]
+        sig_s = sig[order] if sig is not None else None
+        bounds = np.flatnonzero(np.r_[True, blk_s[1:] != blk_s[:-1], True])
+        for i in range(len(bounds) - 1):
+            lo, hi = bounds[i], bounds[i + 1]
+            act_col = grid.actual_for_block(int(blk_s[lo]))
+            if act_col is None:
+                continue
+            self.residual[rid_s[lo:hi]] = pred_s[lo:hi] - act_col[wr_s[lo:hi]]
+            if sig_s is not None:
+                self.sigma[rid_s[lo:hi]] = sig_s[lo:hi]
+
+    def result(self) -> dict:
+        return {
+            "residual": self.residual,
+            "sigma": self.sigma,
+            "meta": {
+                "n_file_rows": self.n_rows,
+                "n_unmatched": self.n_unmatched,
+                "n_duplicate": self.n_dup,
+                "n_finite_residual": int(np.isfinite(self.residual).sum()),
+                "has_sigma": self.sigma is not None,
+            },
+        }
+
+
+def build_residual_from_path(path, grid: TruthGrid, *, validate: bool = True,
+                             log=None) -> dict:
+    """Residual arrays for a forecast **file**, read one row-group at a time.
+
+    Never materializes the submission: peak memory is one row group plus the
+    dense residual array the evaluator needs anyway. Only the columns actually
+    used are decoded (a `model` column, say, is ignored -- the model name comes
+    from the filename), and categorical key columns are kept categorical rather
+    than widened to object.
+
+    Identical output to ``build_residual(read_forecast(path), grid)``.
+    """
+    import fastparquet  # noqa: PLC0415
+
+    from .schema import ALIASES, REQUIRED_COLS, validate_forecast
+
+    pf = fastparquet.ParquetFile(str(path))
+    stored = list(pf.columns)
+    # public name -> the spelling this file actually uses (internal Forma
+    # forecasts carry firm_id / quarter / forecast_horizon)
+    inverse = {v: k for k, v in ALIASES.items()}
+    wanted = []
+    for col in REQUIRED_COLS + [SIGMA_COL]:
+        if col in stored:
+            wanted.append(col)
+        elif inverse.get(col) in stored:
+            wanted.append(inverse[col])
+    missing = [c for c in REQUIRED_COLS
+               if c not in wanted and inverse.get(c) not in wanted]
+    if missing:
+        raise ValueError(f"{path} is missing required column(s): {missing}")
+
+    has_sigma = SIGMA_COL in wanted or inverse.get(SIGMA_COL) in wanted
+    acc = _ResidualAccumulator(grid, has_sigma)
+    problems: list[str] = []
+    for i, chunk in enumerate(pf.iter_row_groups(columns=wanted)):
+        chunk = normalize_columns(chunk)
+        if validate:
+            for p in validate_forecast(chunk, strict=False, check_duplicates=False,
+                                       check_all_null=False):
+                msg = f"row-group {i}: {p}"
+                if msg not in problems:
+                    problems.append(msg)
+        acc.add(chunk)
+    if problems and log is not None:
+        log(f"  Warning: {path}: {'; '.join(problems)}")
+    out = acc.result()
+    out["meta"]["problems"] = problems
+    return out
 
 
 def build_residual(forecast_df: pd.DataFrame, grid: TruthGrid) -> dict:

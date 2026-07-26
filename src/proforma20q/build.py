@@ -29,6 +29,8 @@ are per-item, per-quarter trailing rolling-4 statistics (lookahead-free).
 """
 from __future__ import annotations
 
+import gc
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -96,6 +98,80 @@ def _ytd_bases() -> list[str]:
     with open(CONFIG_DIR / "ytd_features.yaml", encoding="utf-8") as fh:
         items = yaml.safe_load(fh)["ytd_features"]
     return [it[:-1] for it in items]  # strip trailing 'y'
+
+
+def required_raw_columns(feature_set: str | None = None, *,
+                         include_attached: bool = True,
+                         prefer_ytd_source: bool = False) -> list[str]:
+    """Every raw column the build actually consumes, derived from the configs.
+
+    ``comp.fundq`` ships 648 columns; the benchmark reads 82 of them. The list is
+    computed, not hardcoded, so editing ``feature_sets.yaml`` /
+    ``ytd_features.yaml`` moves the projection with it:
+
+    * the feature set's statement items that exist natively in ``fundq``,
+    * the inputs of every computed item in the feature set (``gpq`` needs
+      ``revtq``/``cogsq``, ``fcfq`` needs ``oancfq``/``capxq``, ...),
+    * the ``{base}y`` fiscal-YTD sources behind every ``{base}q`` item,
+    * the scaling inputs, the Compustat keys, the fiscal-calendar fields YTD
+      de-cumulation needs, and the descriptive metadata,
+    * with ``include_attached``, the industry / CRSP-link columns that
+      :func:`~proforma20q.download.download` attaches from other tables.
+
+    ``prefer_ytd_source`` drops the ``{base}q`` form of any item that has a
+    ``{base}y`` source -- ``convert_ytd_to_quarterly`` overwrites ``{base}q``
+    wholesale from the YTD column, so the native one is dead weight. The
+    download uses it (``comp.fundq`` has no ``oancfq`` to select in the first
+    place); a parquet read does not, since a third-party panel may carry only
+    the quarterly form.
+
+    Ordering is stable (items in feature-set order, then keys) so a projected
+    SQL SELECT and a projected parquet read agree.
+    """
+    task = load_task_config()
+    feature_set = feature_set or task["benchmark"]["feature_set"]
+    items = feature_set_items(feature_set)
+    wanted = list(items)
+
+    computed = _computed_definitions()
+    for item in items:
+        if item in computed:
+            wanted.extend(computed[item][0])
+
+    # A `{base}q` item that Compustat only reports fiscal-year-to-date is read as
+    # `{base}y` and de-cumulated by convert_ytd_to_quarterly.
+    ytd_bases = set(_ytd_bases())
+    ytd_derived = {f"{b}q" for b in ytd_bases}
+    for item in list(wanted):
+        if item.endswith("q") and item[:-1] in ytd_bases:
+            wanted.append(f"{item[:-1]}y")
+    if prefer_ytd_source:
+        wanted = [c for c in wanted if c not in ytd_derived]
+
+    scaling = task.get("scaling", {})
+    wanted.extend(scaling.get("features_to_sum", []) or [])
+    wanted.extend(scaling.get("fallbacks", []) or [])
+
+    # Keys, fiscal calendar (fqtr/fyearq drive YTD de-cumulation), metadata, and
+    # the query filters -- kept so a downloaded panel can be re-audited without
+    # a second pull.
+    wanted.extend(["gvkey", "datadate", "fyearq", "fqtr", "tic", "conm",
+                   "indfmt", "datafmt", "consol", "popsrc"])
+    if include_attached:
+        # not from fundq: sich/naicsh come from comp.co_industry, permno/permco
+        # from the CCM link table. `sich` is load-bearing -- it drives both the
+        # financial-sector exclusion and the FF48 industry map.
+        wanted.extend(["sich", "naicsh", "permno", "permco"])
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in wanted:
+        # computed items are formulas, never columns of the raw panel
+        if c in computed or c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
 
 
 def convert_ytd_to_quarterly(df: pd.DataFrame, firm_col: str = "firm_id") -> pd.DataFrame:
@@ -375,13 +451,434 @@ def _regularize(vals: np.ndarray, scale: np.ndarray, k: float, mu: np.ndarray,
 
 def _contiguous_panel(g: pd.DataFrame, qcol: str) -> pd.DataFrame:
     """Reindex one firm to a gap-free quarterly index so positional shifts equal
-    calendar lags."""
+    calendar lags.
+
+    Reference (single-firm) form of the expansion :func:`prepare_panel` performs
+    for every firm at once; kept as the spec that vectorized expansion is tested
+    against (``tests/test_build.py::test_vectorized_panel_matches_per_firm``).
+    """
     per = g[qcol].dt.to_period("Q")
     full = pd.period_range(per.min(), per.max(), freq="Q")
     g = g.set_index(per)
     g = g.reindex(full)
     g[qcol] = full.to_timestamp(how="end")
     return g
+
+
+# What `_quarter_ordinals` returns for NaT: pandas reports year == quarter == -1
+# for the missing-period sentinel, so the arithmetic below yields -6.
+_NAT_ORDINAL = -6
+
+
+def _quarter_ordinals(values) -> np.ndarray:
+    """Calendar-quarter ordinals (``year*4 + quarter - 1``) -- a dense integer
+    axis on which a lag of L quarters is a shift of L positions."""
+    per = pd.to_datetime(pd.Series(values)).dt.to_period("Q")
+    return per.dt.year.to_numpy("int64") * 4 + per.dt.quarter.to_numpy("int64") - 1
+
+
+@dataclass
+class TabularPanel:
+    """A gap-free per-firm quarterly panel held column-wise as flat arrays.
+
+    Rows are ordered by (firm ascending, quarter ascending) and every firm
+    occupies one contiguous block covering each calendar quarter between its
+    first and last observation -- i.e. exactly what applying
+    :func:`_contiguous_panel` to every firm and concatenating would produce, but
+    built with vectorized index arithmetic and stored without any per-firm
+    ``DataFrame``.
+
+    Storing the panel as plain arrays (rather than a frame) is what lets
+    :func:`build` release the raw WRDS panel before the wide matrix is allocated.
+    """
+
+    firm_ids: np.ndarray          # object, gvkey per row
+    quarter: np.ndarray           # datetime64[ns] quarter-end per row
+    qord: np.ndarray              # int64 calendar-quarter ordinal per row
+    pos_in_firm: np.ndarray       # int32 rows since the firm's first quarter
+    pos_from_end: np.ndarray      # int32 rows before the firm's last quarter
+    values: dict[str, np.ndarray] = field(repr=False)   # item -> float64 column
+    items: list[str] = field(default_factory=list)
+    firm_col: str = "firm_id"
+    qcol: str = "quarter"
+
+    def __len__(self) -> int:
+        return int(self.qord.shape[0])
+
+
+def prepare_panel(raw_df: pd.DataFrame, items: list[str], *,
+                  firm_col: str = "firm_id", qcol: str = "quarter") -> TabularPanel:
+    """Expand the prepped raw panel onto the gap-free per-firm quarterly grid.
+
+    Vectorized equivalent of ``groupby(firm).apply(_contiguous_panel)``: one
+    ``np.repeat``-built index instead of 41,595 small frames.
+    """
+    present_items = list(dict.fromkeys(it for it in items if it in raw_df.columns))
+    if "scale" not in raw_df.columns:
+        raise KeyError("prepare_panel requires the 'scale' column (see compute_scale)")
+    if len(raw_df) == 0:
+        raise ValueError(
+            "the prepped panel is empty; nothing survived the sector exclusion / "
+            "YTD conversion. Check the raw panel's date range and `sich` column.")
+    value_cols = list(dict.fromkeys(present_items + ["scale"]))
+
+    codes, uniques = pd.factorize(raw_df[firm_col], sort=True)
+    if (codes < 0).any():
+        # factorize codes a missing key as -1, which then indexes the LAST firm's
+        # block from the end and scatters the row into a different firm's panel.
+        # The old per-firm groupby dropped these rows; silently mixing firms is
+        # not an acceptable substitute.
+        raise ValueError(
+            f"{int((codes < 0).sum())} row(s) have a missing {firm_col}; drop them "
+            "before building")
+    qord_raw = _quarter_ordinals(raw_df[qcol])
+    if (qord_raw == _NAT_ORDINAL).any():
+        # NaT's sentinel year/quarter (-1, -1) produces a plausible-looking
+        # ordinal ~8,000 quarters before the data, which inflates that firm's
+        # contiguous range to ~8,100 rows before anything notices.
+        raise ValueError(
+            f"{int((qord_raw == _NAT_ORDINAL).sum())} row(s) have a missing {qcol}; "
+            "drop them before building")
+    order = np.lexsort((qord_raw, codes))          # (firm asc, quarter asc)
+    codes = codes[order]
+    qord_raw = qord_raw[order]
+
+    n_firms = len(uniques)
+    edges = np.searchsorted(codes, np.arange(n_firms + 1))
+    first = qord_raw[edges[:-1]]
+    last = qord_raw[edges[1:] - 1]
+    lengths = last - first + 1
+    total = int(lengths.sum())
+    offsets = np.concatenate(([0], np.cumsum(lengths)[:-1]))
+
+    panel_codes = np.repeat(np.arange(n_firms), lengths)
+    pos_in_firm = (np.arange(total) - np.repeat(offsets, lengths)).astype(np.int32)
+    pos_from_end = (np.repeat(lengths, lengths) - 1 - pos_in_firm).astype(np.int32)
+    qord = np.repeat(first, lengths) + pos_in_firm
+
+    # Where each observed row lands on the panel grid. Strictly increasing unless
+    # the caller left duplicate (firm, quarter) keys -- which the per-firm
+    # `reindex` form rejects outright, so reject them here too rather than
+    # silently keeping whichever row happens to be written last.
+    scatter = offsets[codes] + (qord_raw - first[codes])
+    if total and np.any(np.diff(scatter) <= 0):
+        raise ValueError(
+            f"duplicate ({firm_col}, {qcol}) rows in the raw panel; de-duplicate "
+            "before building (convert_ytd_to_quarterly already does this)")
+
+    values: dict[str, np.ndarray] = {}
+    for c in value_cols:
+        col = raw_df[c].to_numpy(dtype=float)[order]
+        arr = np.full(total, np.nan, dtype=np.float64)
+        arr[scatter] = col
+        values[c] = arr
+
+    lo = int(qord.min())
+    periods = pd.period_range(
+        start=pd.Period(freq="Q", year=lo // 4, quarter=lo % 4 + 1),
+        periods=int(qord.max()) - lo + 1, freq="Q")
+    quarter = periods.to_timestamp(how="end").to_numpy()[qord - lo]
+    firm_ids = np.asarray(uniques, dtype=object)[panel_codes]
+
+    return TabularPanel(firm_ids=firm_ids, quarter=quarter, qord=qord,
+                        pos_in_firm=pos_in_firm, pos_from_end=pos_from_end,
+                        values=values, items=present_items,
+                        firm_col=firm_col, qcol=qcol)
+
+
+def _lag(vals: np.ndarray, lag: int, pos_in_firm: np.ndarray) -> np.ndarray:
+    """Backward shift by ``lag`` within each firm (== ``groupby.shift(lag)``)."""
+    if lag == 0:
+        return vals
+    out = np.full(vals.shape, np.nan)
+    out[lag:] = vals[:-lag]
+    out[pos_in_firm < lag] = np.nan     # would have reached into the previous firm
+    return out
+
+
+def _lead(vals: np.ndarray, lead: int, pos_from_end: np.ndarray) -> np.ndarray:
+    """Forward shift by ``lead`` within each firm (== ``groupby.shift(-lead)``)."""
+    out = np.full(vals.shape, np.nan)
+    if lead:
+        out[:-lead] = vals[lead:]
+    else:
+        out[:] = vals
+    out[pos_from_end < lead] = np.nan   # would have reached into the next firm
+    return out
+
+
+def _stats_arrays(reg_stats: pd.DataFrame, q_lo: int, n_q: int) -> dict[str, tuple]:
+    """feature -> (mu, sigma) as dense arrays indexed by ``qord - q_lo``."""
+    dup = reg_stats.duplicated(subset=["feature", "quarter"])
+    if dup.any():
+        # The pre-rewrite lookup (`Series.map` on a quarter-indexed frame) raised
+        # on a duplicated index. Silently keeping the first would let a malformed
+        # reg-stats artifact define the target space.
+        first = reg_stats.loc[dup, ["feature", "quarter"]].head(3).to_dict("records")
+        raise ValueError(
+            f"regularization stats have {int(dup.sum())} duplicate (feature, quarter) "
+            f"row(s), e.g. {first}; they define the target space and must be unique")
+    rs = reg_stats
+    pos = _quarter_ordinals(rs["quarter"]) - q_lo
+    inside = (pos >= 0) & (pos < n_q)
+    feat = rs["feature"].to_numpy()
+    mu = rs["mu"].to_numpy(float)
+    sig = rs["sigma"].to_numpy(float)
+    out: dict[str, tuple] = {}
+    for f in pd.unique(feat):
+        sel = inside & (feat == f)
+        a = np.full(n_q, np.nan)
+        b = np.full(n_q, np.nan)
+        a[pos[sel]] = mu[sel]
+        b[pos[sel]] = sig[sel]
+        out[f] = (a, b)
+    return out
+
+
+def _tabular_columns(present_items, target_items, recent, yoy, horizon,
+                     *, with_scale: bool, dummy_ids) -> list[str]:
+    """The wide matrix's column order (metadata keys excluded)."""
+    names: list[str] = []
+    if with_scale:
+        names.append("scale_level_0")
+    for item in present_items:
+        names += [f"{item}_level_{lv}" for lv in range(recent)]
+        names += [f"{item}_yoy_{yk}" for yk in range(yoy)]
+        if item in target_items:
+            names += [f"{item}_t{h}" for h in range(1, horizon + 1)]
+    names += [f"indff48_{fid}" for fid in dummy_ids]
+    return names
+
+
+def _all_nan_rows(arr: np.ndarray, cols: np.ndarray, chunk: int = 32_768) -> np.ndarray:
+    """Row-chunked ``isna().all(axis=1)`` over a column subset. Chunking keeps the
+    boolean intermediate at a few hundred MB instead of ``n_rows x n_cols``."""
+    out = np.empty(arr.shape[0], dtype=bool)
+    if cols.size == 0:
+        out[:] = True
+        return out
+    for a in range(0, arr.shape[0], chunk):
+        b = min(a + chunk, arr.shape[0])
+        out[a:b] = np.isnan(arr[a:b, cols]).all(axis=1)
+    return out
+
+
+def _progress(iterable, desc: str, *, enabled: bool, unit: str = "it"):
+    """tqdm when it is available and wanted, otherwise the plain iterable.
+
+    The build spends tens of minutes inside two loops; through a pipe, block
+    buffering turns that silence into something indistinguishable from a hang.
+    """
+    if not enabled:
+        return iterable
+    try:
+        from tqdm import tqdm  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - tqdm is a declared dependency
+        return iterable
+    return tqdm(iterable, desc=desc, unit=unit, leave=False)
+
+
+def _fill_tabular(panel: TabularPanel, reg_stats: pd.DataFrame, target_items: list[str],
+                  fe_cfg: dict, *, tabular_industry_fe: bool, verbose: bool = False):
+    """Allocate the wide float32 matrix once and fill it feature-by-feature.
+
+    This is the memory-critical routine (port of the research repo's
+    ``create_tabular_dataset``): a single contiguous ``(n_rows, n_cols)`` float32
+    array is allocated up front and each feature writes its own columns in place,
+    vectorized across all firms. The per-firm / per-column ``DataFrame``
+    construction it replaces cost ~10 live copies of the output.
+
+    The two cheap keep conditions (global-history quarter, non-NaN
+    ``scale_level_0``) are evaluated on the panel *before* the matrix is
+    allocated, so the ~30% of panel rows they drop -- gap-filled quarters and
+    rows with no usable size proxy -- never cost 2,547 columns each.
+
+    Returns ``(arr, names, col_idx, keep, sel)``: ``sel`` indexes the panel rows
+    the matrix covers, and ``keep`` is the rest of the research repo's combined
+    keep-mask (target -> feature) over those rows.
+    """
+    recent = fe_cfg["recent_levels"]
+    yoy = fe_cfg["yoy_changes"]
+    horizon = fe_cfg["forecast_horizon"]
+    max_z = float(fe_cfg["max_abs_zscore"])
+    min_lb = fe_cfg["min_lookback"]
+
+    k_map = reg_stats.drop_duplicates("feature").set_index("feature")["k"].to_dict()
+    q_lo = int(panel.qord.min())
+    n_q = int(panel.qord.max()) - q_lo + 1
+    qpos = panel.qord - q_lo
+    stats = _stats_arrays(reg_stats, q_lo, n_q)
+    _missing = (np.full(n_q, np.nan), np.full(n_q, np.nan))
+
+    _ranges, unknown_id, id_to_name = _ff48_flat()
+    dummy_ids = [fid for fid in sorted(id_to_name) if fid != unknown_id] \
+        if tabular_industry_fe else []
+
+    with_scale = "scale" in k_map
+    names = _tabular_columns(panel.items, target_items, recent, yoy, horizon,
+                             with_scale=with_scale, dummy_ids=dummy_ids)
+    col_idx = {n: i for i, n in enumerate(names)}
+    scale = panel.values["scale"]
+
+    # -- keep conditions that do not need the wide matrix, applied first --
+    # Condition 0: drop the earliest `min_lookback-1` GLOBAL quarters, which cannot
+    # carry enough history after feature engineering. On the canonical R13 build
+    # these quarters have no rows that survive the scale / all-NaN conditions, so
+    # this is a no-op there, but it matches the reference for other sample windows.
+    all_quarters = np.unique(panel.qord)
+    if len(all_quarters) > min_lb:
+        pre = panel.qord >= all_quarters[min_lb - 1]
+    else:
+        pre = np.ones(len(panel), dtype=bool)
+    # Condition 1: scale_level_0 must be present (no divide-by-scale here; clamp +
+    # float32 as the research repo).
+    scale_lv0 = None
+    if with_scale:
+        mu_a, sg_a = stats.get("scale", _missing)
+        scale_lv0 = _regularize(scale, scale, k_map["scale"], mu_a[qpos], sg_a[qpos],
+                                max_z, divide_by_scale=False).astype(np.float32)
+        pre &= ~np.isnan(scale_lv0)
+    sel = np.flatnonzero(pre)
+    del pre
+
+    n_rows = sel.size
+    if verbose:
+        print(f"  panel {len(panel):,} rows -> {n_rows:,} with a usable scale; "
+              f"allocating {n_rows:,} x {len(names)} float32 "
+              f"({n_rows * len(names) * 4 / 1e9:.1f} GB)", flush=True)
+    arr = np.full((n_rows, len(names)), np.nan, dtype=np.float32)
+    if with_scale:
+        arr[:, col_idx["scale_level_0"]] = scale_lv0[sel]
+        del scale_lv0
+
+    max_lag = max(recent - 1, yoy - 1 + 4)
+    for item in _progress(panel.items, "  regularizing", enabled=verbose,
+                          unit="item"):
+        k_i = k_map.get(item, 1.0)
+        mu_a, sg_a = stats.get(item, _missing)
+        mu_i, sg_i = mu_a[qpos], sg_a[qpos]
+        raw_vals = panel.values[item]
+        # Lags/leads are taken on the FULL panel and only then subset to `sel`:
+        # a dropped row is still a legitimate lag source for a kept one.
+        # UNCLIPPED normalized levels at lags 0..(recent+yoy+4); levels clamp on
+        # output, YoY differences two UNCLIPPED normals THEN clamps (matching the
+        # research repo, which never feeds a pre-clamped level into the YoY diff).
+        norm_by_lag = [_normalize(_lag(raw_vals, lag, panel.pos_in_firm),
+                                  scale, k_i, mu_i, sg_i)
+                       for lag in range(max_lag + 1)]
+        for lv in range(recent):
+            arr[:, col_idx[f"{item}_level_{lv}"]] = np.clip(
+                norm_by_lag[lv], -max_z, max_z)[sel]
+        for yk in range(yoy):
+            arr[:, col_idx[f"{item}_yoy_{yk}"]] = np.clip(
+                norm_by_lag[yk] - norm_by_lag[yk + 4],
+                -max_z * _YOY_Z_FACTOR, max_z * _YOY_Z_FACTOR)[sel]
+        del norm_by_lag
+        if item in target_items:
+            for lead in range(1, horizon + 1):
+                arr[:, col_idx[f"{item}_t{lead}"]] = _regularize(
+                    _lead(raw_vals, lead, panel.pos_from_end),
+                    scale, k_i, mu_i, sg_i, max_z)[sel]
+
+    # -- remaining keep conditions (target -> feature), over the matrix rows --
+    feat_cols = np.array([col_idx[c] for c in names
+                          if ("_level_" in c or "_yoy_" in c) and c != "scale_level_0"],
+                         dtype=np.intp)
+    # Any recent level (0..recent-1), not just level_0 -- matches the research repo.
+    tgt_level_cols = np.array([col_idx[f"{t}_level_{lv}"] for t in target_items
+                               for lv in range(recent) if f"{t}_level_{lv}" in col_idx],
+                              dtype=np.intp)
+    keep = np.ones(n_rows, dtype=bool)
+    if tgt_level_cols.size:
+        keep &= ~_all_nan_rows(arr, tgt_level_cols)
+    if feat_cols.size:
+        keep &= ~_all_nan_rows(arr, feat_cols)
+    if not keep.any():
+        # Writing three empty parquets and logging success is the worst outcome
+        # here; the usual causes are a `scale` that is NaN everywhere or frozen
+        # reg-stats whose quarters do not overlap the panel.
+        raise ValueError(
+            f"no rows survive the keep-mask (panel {len(panel):,} rows, "
+            f"{sel.size:,} with a usable scale). Check `scale` and that the "
+            "regularization stats cover this panel's quarters.")
+    return arr, names, col_idx, keep, sel
+
+
+def _finish_tabular_block(arr, names, col_idx, firm_ids, qord, quarter, target_items,
+                          fe_cfg, firm_ind, *, tabular_industry_fe, present_in_q0,
+                          firm_col, qcol, verbose: bool = False) -> pd.DataFrame:
+    """Post-fill steps on an already-row-filtered block, in place on ``arr``.
+
+    Mutating the array (not a wrapping frame) keeps every step allocation-free:
+    ``.loc``-based writes on a 2,547-column frame are what a Copy-on-Write pandas
+    would turn into a full copy of the block.
+    """
+    horizon = fe_cfg["forecast_horizon"]
+
+    # -- present-in-q0 target masking --
+    if present_in_q0:
+        for t in target_items:
+            l0 = col_idx.get(f"{t}_level_0")
+            tcols = [col_idx[f"{t}_t{h}"] for h in range(1, horizon + 1)
+                     if f"{t}_t{h}" in col_idx]
+            if l0 is None or not tcols:
+                continue
+            absent = np.flatnonzero(np.isnan(arr[:, l0]))
+            if not absent.size:
+                continue
+            if tcols[-1] - tcols[0] + 1 == len(tcols):
+                # t1..t{horizon} are contiguous by construction -> slice, not fancy
+                # index, so the write stays a strided memcpy.
+                arr[absent, tcols[0]:tcols[-1] + 1] = np.nan
+            else:
+                arr[np.ix_(absent, np.asarray(tcols, dtype=np.intp))] = np.nan
+
+    # -- imputation (per quarter) --
+    # The research repo imputes EVERY ``_level_`` / ``_yoy_`` column, which
+    # INCLUDES ``scale_level_0``. It is never itself NaN (kept rows require it),
+    # so it is never filled -- but as an extra characteristic in the factor matrix
+    # it shifts the loadings, hence the imputed values of every other cell. Match
+    # that column set exactly or imputed cells diverge.
+    impute_names = [c for c in names if "_level_" in c or "_yoy_" in c]
+    impute_cols = np.array([col_idx[c] for c in impute_names], dtype=np.intp)
+    if fe_cfg.get("imputation", {}).get("use") and impute_cols.size:
+        n_factors = int(fe_cfg["imputation"].get("n_factors", 10))
+        order = np.argsort(qord, kind="stable")
+        bounds = np.flatnonzero(np.diff(qord[order])) + 1
+        for rows in _progress(np.split(order, bounds), "  imputing",
+                              enabled=verbose, unit="quarter"):
+            if rows.size < n_factors + 1:
+                continue
+            block = arr[np.ix_(rows, impute_cols)]
+            if not np.isnan(block).any():
+                continue
+            # Fortran order deliberately: `impute_local_xs` runs an eigendecomposition
+            # whose last-bit rounding depends on the input's memory layout, and a
+            # column-extracted pandas block (what both the research repo and the
+            # per-firm builder fed it) is column-major. Keeps imputed cells
+            # bit-identical to those builders. Not theoretical: C-ordered input
+            # moved 1,110 imputed `gdwlq` cells (max |delta| 8e-27, values whose
+            # true magnitude is ~0) across 5 quarters of a 250-firm slice of the
+            # real panel -- a degenerate factor problem where any perturbation
+            # flips the result.
+            filled = impute_local_xs(
+                pd.DataFrame(np.asfortranarray(block), columns=impute_names),
+                n_factors=n_factors)
+            arr[np.ix_(rows, impute_cols)] = filled.to_numpy()
+
+    # -- FF48 industry dummies --
+    if tabular_industry_fe:
+        _ranges, unknown_id, id_to_name = _ff48_flat()
+        dummy_ids = [fid for fid in sorted(id_to_name) if fid != unknown_id]
+        ind_ids = pd.Series(firm_ids).map(firm_ind).fillna(unknown_id).to_numpy("int64")
+        first = col_idx[f"indff48_{dummy_ids[0]}"]
+        arr[:, first:first + len(dummy_ids)] = (
+            ind_ids[:, None] == np.asarray(dummy_ids)[None, :])
+
+    df = pd.DataFrame(arr, columns=names, copy=False)
+    df.insert(0, qcol, quarter)
+    df.insert(0, firm_col, firm_ids)
+    return df
 
 
 def build_tabular(
@@ -397,150 +894,88 @@ def build_tabular(
     firm_col: str = "firm_id",
     qcol: str = "quarter",
 ) -> pd.DataFrame:
-    """Build the wide regularized tabular matrix (all firms, all quarters)."""
-    recent = fe_cfg["recent_levels"]
-    yoy = fe_cfg["yoy_changes"]
-    horizon = fe_cfg["forecast_horizon"]
-    max_z = float(fe_cfg["max_abs_zscore"])
-    min_lb = fe_cfg["min_lookback"]
+    """Build the wide regularized tabular matrix (all firms, all quarters).
 
-    present_items = [it for it in items if it in raw_df.columns]
-    k_map = reg_stats.drop_duplicates("feature").set_index("feature")["k"].to_dict()
-    # (feature, quarter) -> (mu, sigma)
-    mu_lut = {f: g.set_index("quarter")["mu"] for f, g in reg_stats.groupby("feature")}
-    sig_lut = {f: g.set_index("quarter")["sigma"] for f, g in reg_stats.groupby("feature")}
+    Convenience form: expands the panel and returns the whole matrix as one
+    frame. :func:`build` uses :func:`build_tabular_splits` instead, which shares
+    this code path but never materializes the unsplit matrix.
+    """
+    panel = prepare_panel(raw_df, items, firm_col=firm_col, qcol=qcol)
+    arr, names, col_idx, keep, sel = _fill_tabular(
+        panel, reg_stats, target_items, fe_cfg, tabular_industry_fe=tabular_industry_fe)
+    block = arr[keep]
+    del arr
+    gc.collect()
+    rows = sel[keep]
+    return _finish_tabular_block(
+        block, names, col_idx, panel.firm_ids[rows], panel.qord[rows],
+        panel.quarter[rows], target_items, fe_cfg, firm_ind,
+        tabular_industry_fe=tabular_industry_fe, present_in_q0=present_in_q0,
+        firm_col=firm_col, qcol=qcol)
 
-    raw_df = raw_df.copy()
-    raw_df[qcol] = pd.to_datetime(raw_df[qcol])
 
-    panels = []
-    for _fid, g in raw_df.sort_values([firm_col, qcol]).groupby(firm_col, sort=False):
-        g = _contiguous_panel(g, qcol)
-        n = len(g)
-        scale = g["scale"].to_numpy(float)
-        q_index = g[qcol]
-        # per-row mu/sigma per item (mapped by the row's own quarter)
-        out = {firm_col: _fid, qcol: g[qcol].to_numpy()}
+def build_tabular_splits(
+    panel: TabularPanel,
+    reg_stats: pd.DataFrame,
+    target_items: list[str],
+    fe_cfg: dict,
+    firm_ind: dict,
+    splits: dict,
+    *,
+    tabular_industry_fe: bool = True,
+    present_in_q0: bool = True,
+    verbose: bool = False,
+):
+    """Yield ``(split_name, frame)`` for train / val / test, one at a time.
 
-        def stats_for(item):
-            mu = q_index.map(mu_lut.get(item, pd.Series(dtype=float))).to_numpy(float)
-            sg = q_index.map(sig_lut.get(item, pd.Series(dtype=float))).to_numpy(float)
-            return k_map.get(item, 1.0), mu, sg
+    Identical output to ``split_tabular(build_tabular(...))`` -- every remaining
+    step (present-in-q0 masking, per-quarter imputation, industry dummies,
+    out-of-period masking) is row-local or per-quarter, and calendar splits never
+    divide a quarter. Doing it per split means the unsplit ~12 GB matrix and its
+    three split copies are never live at the same time.
+    """
+    train_end, val_end = splits["train_end_year"], splits["val_end_year"]
+    arr, names, col_idx, keep, sel = _fill_tabular(
+        panel, reg_stats, target_items, fe_cfg,
+        tabular_industry_fe=tabular_industry_fe, verbose=verbose)
+    year = panel.qord[sel] // 4
+    for name, mask, end_year in (
+        ("train", keep & (year <= train_end), train_end),
+        ("val", keep & (year > train_end) & (year <= val_end), val_end),
+        ("test", keep & (year > val_end), None),
+    ):
+        block = arr[mask]
+        rows = sel[mask]
+        # Out-of-period masking first: it only nulls ``_t`` cells, so it commutes
+        # with present-in-q0 (also a ``_t`` NaN-setter) and with imputation (which
+        # touches only ``_level_`` / ``_yoy_``). Doing it here keeps every write on
+        # the bare array, before anything wraps it in a frame.
+        if end_year is not None:
+            _mask_out_of_period_inplace(block, col_idx, panel.qord[rows], end_year,
+                                        target_items, fe_cfg["forecast_horizon"])
+        df = _finish_tabular_block(
+            block, names, col_idx, panel.firm_ids[rows], panel.qord[rows],
+            panel.quarter[rows], target_items, fe_cfg, firm_ind,
+            tabular_industry_fe=tabular_industry_fe, present_in_q0=present_in_q0,
+            firm_col=panel.firm_col, qcol=panel.qcol, verbose=verbose)
+        yield name, df
+        del df, block
+        gc.collect()
 
-        # scale_level_0 (no divide-by-scale); clamp + float32 as the research repo.
-        if "scale" in k_map:
-            ks, mus, sgs = k_map["scale"], q_index.map(mu_lut["scale"]).to_numpy(float), \
-                q_index.map(sig_lut["scale"]).to_numpy(float)
-            out["scale_level_0"] = _regularize(
-                scale, scale, ks, mus, sgs, max_z, divide_by_scale=False).astype(np.float32)
 
-        for item in present_items:
-            k_i, mu_i, sg_i = stats_for(item)
-            raw_vals = g[item].to_numpy(float)
-            # UNCLIPPED normalized levels at lags 0..(recent+yoy+4); levels clamp on
-            # output, YoY differences two UNCLIPPED normals THEN clamps (matching the
-            # research repo, which never feeds a pre-clamped level into the YoY diff).
-            max_lag = max(recent - 1, yoy - 1 + 4)
-            norm_by_lag = {}
-            for lag in range(max_lag + 1):
-                # backward shift by `lag` (== pandas groupby.shift(lag)): NaN-fill
-                # the first `lag` rows, keep length n; all-NaN once lag >= n so a
-                # short-history firm never trims from the wrong end.
-                if lag == 0:
-                    shifted = raw_vals
-                else:
-                    shifted = np.full(n, np.nan)
-                    if lag < n:
-                        shifted[lag:] = raw_vals[:n - lag]
-                norm_by_lag[lag] = _normalize(shifted, scale, k_i, mu_i, sg_i)
-            for lv in range(recent):
-                out[f"{item}_level_{lv}"] = np.clip(norm_by_lag[lv], -max_z, max_z).astype(np.float32)
-            for yk in range(yoy):
-                out[f"{item}_yoy_{yk}"] = np.clip(
-                    norm_by_lag[yk] - norm_by_lag[yk + 4],
-                    -max_z * _YOY_Z_FACTOR, max_z * _YOY_Z_FACTOR).astype(np.float32)
-            if item in target_items:
-                for lead in range(1, horizon + 1):
-                    # forward shift by `lead` (== pandas groupby.shift(-lead)):
-                    # NaN-fill the last `lead` rows, keep length n; all-NaN once
-                    # lead >= n.
-                    fut = np.full(n, np.nan)
-                    if lead < n:
-                        fut[:n - lead] = raw_vals[lead:]
-                    out[f"{item}_t{lead}"] = _regularize(
-                        fut, scale, k_i, mu_i, sg_i, max_z).astype(np.float32)
-        panels.append(pd.DataFrame(out))
-
-    df = pd.concat(panels, ignore_index=True)
-
-    # -- row filtering (research repo keep-mask: history -> scale -> target -> feature) --
-    feat_cols = [c for c in df.columns if ("_level_" in c or "_yoy_" in c) and c != "scale_level_0"]
-    # Any recent level (0..recent-1), not just level_0 -- matches the research repo.
-    tgt_level_cols = [f"{t}_level_{lv}" for t in target_items for lv in range(recent)
-                      if f"{t}_level_{lv}" in df.columns]
-
-    # Condition 0: drop the earliest `min_lookback-1` GLOBAL quarters, which cannot
-    # carry enough history after feature engineering. On the canonical R13 build
-    # these quarters have no rows that survive the scale / all-NaN conditions, so
-    # this is a no-op there, but it matches the reference for other sample windows.
-    q_periods = pd.to_datetime(df[qcol]).dt.to_period("Q")
-    all_quarters = np.sort(q_periods.unique())
-    if len(all_quarters) > min_lb:
-        keep = q_periods.isin(set(all_quarters[min_lb - 1:])).to_numpy()
-    else:
-        keep = np.ones(len(df), dtype=bool)
-    # NB: rebind (``keep = keep & ...``) rather than in-place ``&=``. Under pandas
-    # 3.x Copy-on-Write, ``Series.to_numpy()`` returns a read-only array, so an
-    # in-place update of ``keep`` raises "output array is read-only".
-    if "scale_level_0" in df.columns:
-        keep = keep & df["scale_level_0"].notna().to_numpy()
-    if tgt_level_cols:
-        keep = keep & ~df[tgt_level_cols].isna().all(axis=1).to_numpy()
-    if feat_cols:
-        keep = keep & ~df[feat_cols].isna().all(axis=1).to_numpy()
-    df = df[keep].reset_index(drop=True)
-
-    # -- present-in-q0 target masking --
-    if present_in_q0:
-        for t in target_items:
-            l0 = f"{t}_level_0"
-            if l0 not in df.columns:
-                continue
-            absent = df[l0].isna()
-            tcols = [f"{t}_t{h}" for h in range(1, horizon + 1) if f"{t}_t{h}" in df.columns]
-            df.loc[absent, tcols] = np.nan
-
-    # -- imputation (per quarter) --
-    # The research repo imputes EVERY ``_level_`` / ``_yoy_`` column, which
-    # INCLUDES ``scale_level_0``. It is never itself NaN (kept rows require it),
-    # so it is never filled -- but as an extra characteristic in the factor matrix
-    # it shifts the loadings, hence the imputed values of every other cell. Match
-    # that column set exactly or imputed cells diverge.
-    impute_cols = [c for c in df.columns if "_level_" in c or "_yoy_" in c]
-    if fe_cfg.get("imputation", {}).get("use") and impute_cols:
-        n_factors = int(fe_cfg["imputation"].get("n_factors", 10))
-        parts = []
-        for _q, gq in df.groupby(qcol, sort=False):
-            block = gq[impute_cols]
-            if block.isna().any().any() and len(gq) >= n_factors + 1:
-                gq = gq.copy()
-                gq[impute_cols] = impute_local_xs(block, n_factors=n_factors).astype("float32")
-            parts.append(gq)
-        df = pd.concat(parts).sort_index()
-
-    # -- FF48 industry dummies --
-    if tabular_industry_fe:
-        _ranges, unknown_id, id_to_name = _ff48_flat()
-        ind_ids = df[firm_col].map(firm_ind).fillna(unknown_id).astype("int64")
-        # reference level (unknown_id) dropped; build all dummies at once to avoid
-        # fragmenting the frame with 48 successive inserts.
-        dummies = {
-            f"indff48_{fid}": (ind_ids == fid).astype("float32")
-            for fid in sorted(id_to_name) if fid != unknown_id
-        }
-        df = pd.concat([df, pd.DataFrame(dummies, index=df.index)], axis=1)
-
-    return df
+def _mask_out_of_period_inplace(arr, col_idx, qord, period_end_year, target_items, horizon):
+    """Null targets whose landing quarter falls past ``period_end_year`` Q4
+    (train/val only), so a split never carries a target from a later split."""
+    boundary = pd.Period(f"{period_end_year}Q4", freq="Q")
+    boundary_ord = boundary.year * 4 + boundary.quarter - 1
+    for h in range(1, horizon + 1):
+        cols = np.array([col_idx[f"{t}_t{h}"] for t in target_items
+                         if f"{t}_t{h}" in col_idx], dtype=np.intp)
+        if not cols.size:
+            continue
+        beyond = np.flatnonzero(qord + h > boundary_ord)
+        if beyond.size:
+            arr[np.ix_(beyond, cols)] = np.nan
 
 
 def _mask_out_of_period(df: pd.DataFrame, period_end_year: int, target_items: list[str],
@@ -603,6 +1038,67 @@ def build_tuple(raw_df, account_cols, firm_ind, *, firm_col="firm_id", qcol="qua
     return out, firm_id_map, account_id_map
 
 
+def write_id_maps(out_dir, suffix: str, firm_id_map: dict, account_id_map: dict) -> dict:
+    """Persist the tuple view's integer-id dictionaries next to the artifacts.
+
+    Three CSVs -- ``firm_id_map``, ``account_id_map``, ``industry_id_map`` --
+    written with the id column first and sorted by id. Without them the tuple
+    view's ``firm_id`` / ``account_id`` / ``industry_id`` integers cannot be
+    translated back into the gvkey strings and pf_full item names the submission
+    schema requires, so a model trained on the tuple view has no route to a valid
+    submission. ``.csv`` is git-ignored, so these stay untracked build outputs
+    like every other WRDS-derived file.
+    """
+    out_dir = Path(out_dir)
+    _ranges, unknown_id, id_to_name = _ff48_flat()
+    # `_ff48_flat` returns only the 48 named industries; the tuple view's
+    # industry_id also takes `unknown_id`, which is the modal value -- 44.8% of
+    # firms and 32.3% of rows map to it. A map that omits it cannot decode a
+    # third of the artifact.
+    id_to_name = dict(id_to_name)
+    id_to_name.setdefault(unknown_id, load_ff48_ranges().get("unknown_name", "Unknown"))
+    tables = {
+        "firm_id_map": pd.DataFrame(
+            {"firm_id_int": list(firm_id_map.values()),
+             "firm_id": list(firm_id_map.keys())}).sort_values("firm_id_int"),
+        "account_id_map": pd.DataFrame(
+            {"account_id": list(account_id_map.values()),
+             "account_name": list(account_id_map.keys())}).sort_values("account_id"),
+        "industry_id_map": pd.DataFrame(
+            {"industry_id": sorted(id_to_name),
+             "industry_name": [id_to_name[i] for i in sorted(id_to_name)],
+             "is_reference_level": [i == unknown_id for i in sorted(id_to_name)]}),
+    }
+    written = {}
+    for name, table in tables.items():
+        p = out_dir / f"{name}__{suffix}.csv"
+        table.to_csv(p, index=False)
+        written[name] = p
+    return written
+
+
+def read_id_maps(processed_dir, suffix: str) -> dict[str, pd.DataFrame]:
+    """Read the id maps back with the dtypes that make them usable.
+
+    Use this rather than a bare ``read_csv``: ``firm_id`` is a ZERO-PADDED gvkey
+    string ("001045"), and CSV has no types, so a default read turns it into the
+    integer 1045 -- which then matches nothing in the truth file. The failure is
+    silent, and it is the exact translation these maps exist to provide.
+    """
+    processed_dir = Path(processed_dir)
+    dtypes = {
+        "firm_id_map": {"firm_id": str, "firm_id_int": "int64"},
+        "account_id_map": {"account_name": str, "account_id": "int64"},
+        "industry_id_map": {"industry_name": str, "industry_id": "int64"},
+    }
+    out = {}
+    for name, dtype in dtypes.items():
+        p = processed_dir / f"{name}__{suffix}.csv"
+        if p.exists():
+            out[name] = pd.read_csv(p, dtype=dtype)
+    return out
+
+
 def _year_to_max_q(year: int) -> int:
     return (pd.Period(f"{year}Q4", freq="Q").ordinal - BASE_QUARTER.ordinal)
 
@@ -662,8 +1158,24 @@ def build(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    log(f"Loading raw panel {raw_path} ...")
-    raw = pd.read_parquet(raw_path, engine="fastparquet")
+    # Project to the columns the build consumes. A `SELECT f.*` panel carries 655
+    # columns, of which 82 are read; loading all of them costs ~25 GB and is paid
+    # on EVERY build, not just at download time.
+    import fastparquet  # noqa: PLC0415 - engine is already a hard dependency
+    available = list(fastparquet.ParquetFile(str(raw_path)).columns)
+    # A panel may already carry the post-rename spellings (a third-party or
+    # re-saved panel); ask for whichever form the file actually has, never both,
+    # since renaming onto an existing column would duplicate it.
+    renames = {"gvkey": "firm_id", "datadate": "quarter", "naicsh": "naics"}
+    wanted_names = []
+    for c in required_raw_columns():
+        wanted_names.append(c)
+        if c in renames and c not in available:
+            wanted_names.append(renames[c])
+    want = [c for c in dict.fromkeys(wanted_names) if c in available]
+    log(f"Loading raw panel {raw_path} "
+        f"({len(want)} of {len(available)} columns) ...")
+    raw = pd.read_parquet(raw_path, engine="fastparquet", columns=want or None)
     raw = raw.rename(columns={"gvkey": "firm_id", "datadate": "quarter", "naicsh": "naics"})
     raw["firm_id"] = raw["firm_id"].astype(str)
 
@@ -702,7 +1214,18 @@ def build(
         log("Building tuple view ...")
         account_cols = [c for c in dict.fromkeys(items + target_items) if c in raw.columns] + \
             (["scale"] if "scale" in raw.columns else [])
-        tup, _fm, _am = build_tuple(raw, account_cols, firm_ind)
+        tup, firm_id_map, account_id_map = build_tuple(raw, account_cols, firm_ind)
+        # The tuple view stores integer ids; the submission schema requires the
+        # gvkey string and the pf_full item NAME. These maps are the only bridge,
+        # so a build that discards them cannot produce a schema-valid submission
+        # from the tuple view at all. They also pin the ordering rule: account and
+        # industry ids are embedding indices, so a build whose ordering differs
+        # from the one a checkpoint was trained under silently permutes them.
+        id_paths = write_id_maps(out_dir, suffix, firm_id_map, account_id_map)
+        written.update(id_paths)
+        n_ind = sum(1 for _ in open(id_paths["industry_id_map"], encoding="utf-8")) - 1
+        log(f"  id maps: {len(firm_id_map):,} firms, {len(account_id_map)} accounts, "
+            f"{n_ind} industries (incl. the unknown reference level)")
         tr, va, te = split_tuple(tup, splits["train_end_year"], splits["val_end_year"],
                                  pre_quarters=fe["recent_levels"] + fe["yoy_changes"] - 1)
         for name, part in (("train", tr), ("val", va), ("test", te)):
@@ -713,16 +1236,21 @@ def build(
 
     if "tabular" in which:
         log("Building tabular view ...")
-        tab = build_tabular(raw, reg_stats, items, target_items, fe, firm_ind,
-                            tabular_industry_fe=task["industry"]["tabular_industry_fe"],
-                            present_in_q0=task["targets"]["present_in_q0"])
-        tr, va, te = split_tabular(tab, splits["train_end_year"], splits["val_end_year"],
-                                   target_items, fe["forecast_horizon"])
-        for name, part in (("train", tr), ("val", va), ("test", te)):
+        # Expand onto the per-firm quarterly grid, then drop the raw panel BEFORE
+        # the wide matrix is allocated -- the raw frame is several GB and nothing
+        # downstream of here reads it.
+        panel = prepare_panel(raw, items)
+        del raw
+        gc.collect()
+        for name, part in build_tabular_splits(
+                panel, reg_stats, target_items, fe, firm_ind, splits, verbose=verbose,
+                tabular_industry_fe=task["industry"]["tabular_industry_fe"],
+                present_in_q0=task["targets"]["present_in_q0"]):
             p = out_dir / f"tabular_{name}__{suffix}.parquet"
             part.to_parquet(p, engine="fastparquet", index=False)
             written[f"tabular_{name}"] = p
             log(f"  tabular_{name}: {len(part):,} rows, {part.shape[1]} cols")
+            del part
 
     log(f"Build complete. suffix='{suffix}'")
     return written

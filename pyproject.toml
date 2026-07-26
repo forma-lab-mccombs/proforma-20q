@@ -49,8 +49,9 @@ dev = ["pytest>=7", "pyarrow"]
 proforma20q = "proforma20q.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ANONYMIZED/proforma-20q"
-Repository = "https://github.com/ANONYMIZED/proforma-20q"
+Homepage = "https://github.com/forma-lab-mccombs/proforma-20q"
+Repository = "https://github.com/forma-lab-mccombs/proforma-20q"
+Issues = "https://github.com/forma-lab-mccombs/proforma-20q/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

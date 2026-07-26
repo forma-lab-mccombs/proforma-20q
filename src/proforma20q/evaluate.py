@@ -40,8 +40,8 @@ import numpy as np
 import pandas as pd
 from scipy.special import ndtr, stdtr  # standard-normal / Student-t CDF (vectorized)
 
-from .schema import SIGMA_COL, normalize_columns, read_forecast
-from .truth_grid import TruthGrid, build_residual
+from .schema import SIGMA_COL, normalize_columns
+from .truth_grid import TruthGrid, build_residual, build_residual_from_path
 
 # Aggregation levels (group keys); empty list == the global pool.
 AGG_LEVELS: dict[str, list[str]] = {
@@ -285,11 +285,13 @@ def evaluate_forecasts(
         try:
             if isinstance(obj, (str, Path)):
                 fam = families.get(name) or _read_family_sidecar(obj)
-                fdf = read_forecast(obj, validate=True, strict=False)
+                # Streamed by row-group. Reading a full-coverage submission as a
+                # frame needs tens of GB (the string key columns dominate), which
+                # made the benchmark's own headline artifact unscoreable.
+                cache = build_residual_from_path(obj, grid, log=log)
             else:
                 fam = families.get(name, ("gaussian", None))
-                fdf = normalize_columns(obj)
-            cache = build_residual(fdf, grid)
+                cache = build_residual(normalize_columns(obj), grid)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{name} ({e})")
             continue
@@ -478,11 +480,24 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log) -> np.ndarray:
         elif obj.size == n_cells:
             bits = obj                                    # already one entry per cell
         else:
+            n_rows = n_cells // (len(grid.targets) * grid.n_h) if grid.n_h else 0
+            mask_rows = obj.size * 8 // (len(grid.targets) * grid.n_h) if grid.n_h else 0
             raise ValueError(
                 f"grid-aligned sample mask has {obj.size} entries but this truth's grid "
-                f"has {n_cells} cells (expected a length-{n_cells} bool array or its "
-                f"{packed_len}-byte np.packbits); build the mask against the canonical "
-                f"tabular_test (same firms/quarters/targets).")
+                f"has {n_cells} cells "
+                f"({len(grid.targets)} targets x {grid.n_h} horizons x {n_rows:,} test "
+                f"rows; a {packed_len}-byte np.packbits was expected).\n"
+                f"  The most likely cause is Compustat VINTAGE DRIFT, not a mistake: the "
+                f"grid-aligned mask is a bitmap over an exact row set (~{mask_rows:,} "
+                f"rows), so a rebuild that gains or loses even one test row cannot use "
+                f"it. The README says outright that a fresh pull will not be "
+                f"bit-identical.\n"
+                f"  Use the portable KEYS form instead -- "
+                f"`--sample-mask full_sample_mask_keys.parquet` -- which matches by "
+                f"(firm, target, origin, horizon) value and simply intersects with "
+                f"whatever rows your build has. Convert the bit array once with:\n"
+                f"    python scripts/build_full_sample_mask.py --from-bits <bits>.npy "
+                f"--truth <canonical tabular_test>.parquet --out artifacts")
         bits = bits.astype(bool)
         log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {n_cells:,} cells.")
         return bits

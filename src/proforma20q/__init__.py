@@ -6,7 +6,10 @@ evaluation protocol, submission format, reference baselines). It is model-free:
 you build the data from your own WRDS credentials, train your model, and score a
 forecast file with :func:`proforma20q.evaluate.evaluate_forecasts`.
 
-Nothing WRDS-derived is distributed here -- code, configs, and checksums only.
+No firm-level WRDS-derived data is distributed here. The package ships code,
+configs, checksums, the published canonical regularization statistics (aggregate
+per-(feature, quarter) moments) and the Full-sample coverage bitmap -- nothing
+from which a firm's values can be recovered.
 """
 
 __version__ = "0.1.0"

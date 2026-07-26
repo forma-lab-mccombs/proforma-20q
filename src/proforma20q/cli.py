@@ -7,8 +7,9 @@
     proforma20q validate  my_forecasts.parquet        # submission-schema check
     proforma20q report-drift                          # vintage divergence vs canonical checksums
 
-Nothing WRDS-derived ships with the package; a build needs the user's own WRDS
-credentials (see README).
+No firm-level WRDS-derived data ships with the package (the bundled canonical
+regularization statistics are aggregate per-(feature, quarter) moments); a build
+needs the user's own WRDS credentials (see README).
 """
 from __future__ import annotations
 
@@ -21,17 +22,54 @@ from .config import load_task_config
 
 
 def _default_suffix(tag: str | None = None) -> str:
+    from .config import CANONICAL_TAG
     task = load_task_config()
     fs = task["benchmark"]["feature_set"]
-    tag = tag or "r13_node_optionD_indfe_val8"
-    return f"{fs}__{tag}"
+    return f"{fs}__{tag or CANONICAL_TAG}"
 
 
 # --------------------------------------------------------------------------- #
+# The `wrds` client surfaces a bad/absent credential as a bare EOFError from the
+# input() prompt it falls back to, or as an OperationalError from psycopg2. Both
+# reach the user as a traceback that says nothing about credentials.
+# NOT KeyboardInterrupt: it is a BaseException, so `except Exception` never sees
+# it -- and a Ctrl-C during a ~1-hour pull must not be reported as an auth
+# failure, which is the one error here that carries a lockout warning.
+_AUTH_ERRORS = (EOFError,)
+_AUTH_HINT = (
+    "WRDS authentication failed.\n"
+    "  - check the username, and that your pgpass file exists and is readable:\n"
+    "      Linux/macOS  ~/.pgpass                      (chmod 600)\n"
+    "      Windows      %APPDATA%\\postgresql\\pgpass.conf\n"
+    "  - WRDS enforces Duo 2FA even with a valid pgpass: a connection may need\n"
+    "    you to approve a push.\n"
+    "  - DO NOT re-run this in a loop. Repeated attempts without a Duo response\n"
+    "    cause WRDS to deactivate the account. Resolve the cause, then retry once."
+)
+
+
+def _auth_failed(e: BaseException) -> bool:
+    if isinstance(e, _AUTH_ERRORS):
+        return True
+    text = f"{type(e).__name__}: {e}".lower()
+    return any(k in text for k in
+               ("password", "authentication", "pgpass", "no such user", "role \""))
+
+
 def cmd_download(args) -> int:
     from .download import download
-    download(args.wrds_user, out_dir=args.out,
-             start_year=args.start_year, end_year=args.end_year)
+    try:
+        download(args.wrds_user, out_dir=args.out,
+                 start_year=args.start_year, end_year=args.end_year,
+                 intermediate_dir=args.intermediate_dir,
+                 chunk_years=args.chunk_years,
+                 columns=["*"] if args.all_columns else None)
+    except Exception as e:  # noqa: BLE001
+        if not _auth_failed(e):
+            raise
+        print(f"{_AUTH_HINT}\n  (underlying error: {type(e).__name__}: {e})",
+              file=sys.stderr)
+        return 1
     return 0
 
 
@@ -46,12 +84,40 @@ def cmd_build(args) -> int:
                   file=sys.stderr)
             return 2
         from .download import download
-        raw_path = download(args.wrds_user, out_dir=raw_path.parent)
+        try:
+            raw_path = download(args.wrds_user, out_dir=raw_path.parent)
+        except Exception as e:  # noqa: BLE001
+            if not _auth_failed(e):
+                raise
+            print(f"{_AUTH_HINT}\n  (underlying error: {type(e).__name__}: {e})",
+                  file=sys.stderr)
+            return 1
 
+    # --reg-stats decides the TARGET SPACE, i.e. the ground truth you will be
+    # scored against. Two builds off one panel differing only in this flag share
+    # ~0% of target cells. It therefore has an explicit default (canonical) and
+    # announces which space is in use rather than deciding silently.
     reg_stats = args.reg_stats
-    if reg_stats == "canonical":
-        from .config import canonical_reg_stats_path
-        reg_stats = canonical_reg_stats_path(args.tag or "r13_node_optionD_indfe_val8")
+    if reg_stats == "estimate":
+        reg_stats = None
+        print("Reg-stats: RE-ESTIMATING from this panel's train split. Your targets "
+              "will NOT be comparable to the published numbers -- pass "
+              "--reg-stats canonical for that.")
+    elif reg_stats == "canonical":
+        from .config import CANONICAL_TAG, canonical_reg_stats_path
+        # `--tag` names the OUTPUT dataset; the canonical statistics are a fixed
+        # published artifact. Only look for a tag-specific one if it exists,
+        # otherwise pin the published R13 set -- building a differently-tagged
+        # dataset in the published target space is a legitimate thing to want.
+        reg_stats = canonical_reg_stats_path(args.tag or CANONICAL_TAG)
+        if not Path(reg_stats).exists():
+            reg_stats = canonical_reg_stats_path(CANONICAL_TAG)
+            if not Path(reg_stats).exists():
+                print(f"No canonical regularization statistics bundled at {reg_stats}; "
+                      f"pass --reg-stats estimate or an explicit path.", file=sys.stderr)
+                return 2
+        print(f"Reg-stats: PINNED to the published canonical statistics "
+              f"({Path(reg_stats).name}).")
 
     which = tuple(w.strip() for w in args.which.split(",") if w.strip())
     build(raw_path, out_dir=args.out, dataset_tag=args.tag, which=which,
@@ -59,8 +125,8 @@ def cmd_build(args) -> int:
 
     suffix = _default_suffix(args.tag)
     if args.report_drift:
-        _print_drift(args.out, suffix)
-    elif not args.no_verify:
+        return _print_drift(args.out, suffix, args.reference)
+    if not args.no_verify:
         _print_verify(args.out, suffix)
     return 0
 
@@ -119,15 +185,20 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_validate(args) -> int:
-    from .schema import SubmissionError, read_forecast, validate_forecast
+    from .schema import scan_forecast_file
+    # Streamed by row-group: a full-coverage submission is ~550M rows / ~73 GB
+    # as a frame, so validation cannot start by reading the file. One pass, not
+    # one per kind of finding.
     try:
-        df = read_forecast(args.forecast, validate=False)
+        problems, n_rows, warnings = scan_forecast_file(args.forecast)
     except Exception as e:  # noqa: BLE001
         print(f"FAILED to read {args.forecast}: {e}", file=sys.stderr)
         return 2
-    problems = validate_forecast(df, strict=False)
+    for w in warnings:
+        print(f"  WARNING: {w}", file=sys.stderr)
     if not problems:
-        print(f"OK: {args.forecast} conforms to the submission schema ({len(df):,} rows).")
+        print(f"OK: {args.forecast} conforms to the submission schema ({n_rows:,} rows)"
+              + (f", with {len(warnings)} warning(s)." if warnings else "."))
         return 0
     print(f"INVALID: {args.forecast}", file=sys.stderr)
     for p in problems:
@@ -136,7 +207,7 @@ def cmd_validate(args) -> int:
 
 
 def cmd_report_drift(args) -> int:
-    return _print_drift(args.processed, _default_suffix(args.tag))
+    return _print_drift(args.processed, _default_suffix(args.tag), args.reference)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,32 +225,69 @@ def _print_verify(processed_dir, suffix) -> None:
     print(f"  ALL MATCH: {rep['all_match']}")
 
 
-def _print_drift(processed_dir, suffix) -> int:
-    from .checksums import report_drift
-    rep = report_drift(processed_dir, suffix)
-    if rep.get("_note"):
-        print(f"\nDrift report: {rep['_note']}")
-        return 0
+def _print_drift(processed_dir, suffix, reference=None) -> int:
+    from .checksums import reference_record, report_drift
+
+    published = reference_record(reference, suffix) if reference else None
+    rep = report_drift(processed_dir, suffix, published)
+    artifacts = {k: v for k, v in rep.items() if not k.startswith("_")}
     # A published artifact with no local file reads as "missing"; anything else
     # is a file that exists on disk. Zero local files == nothing was built, which
     # must be an explicit error, not a green (empty) "no drift" report.
-    present = [name for name, r in rep.items() if r.get("status") != "missing"]
+    present = [name for name, r in artifacts.items() if r.get("status") != "missing"]
     if not present:
+        if rep.get("_note") and not artifacts:
+            print(f"\nDrift report: {rep['_note']}")
+            return 0
         print(f"no built artifacts found under {processed_dir} -- run `proforma20q build` "
               f"first", file=sys.stderr)
         return 2
-    print("\n=== Vintage-drift report (vs canonical checksums) ===")
-    for name, r in rep.items():
+
+    against = f"reference build {reference}" if reference else "canonical checksums"
+    print(f"\n=== Vintage-drift report (vs {against}) ===")
+    for name, r in artifacts.items():
         status = r.get("status")
         if status in ("missing", "extra"):
             print(f"  {status:>9}  {name}")
+            continue
+        if "n_cols_over_threshold" in r:
+            verdict = "PASS" if r["pass"] else "FAIL"
+            print(f"  [{verdict}] {name}")
+            print(f"      rows {r['row_count_delta']:+,} ({r['row_count_delta_frac']:.3%}); "
+                  f"{r['n_cols_over_threshold']}/{r['n_cols']} columns beyond tolerance")
+            if r["n_cols"] == 0:
+                print("      NO COLUMNS IN COMMON -- nothing was compared; this is not a pass")
+            if r["n_cols_only_here"] or r["n_cols_only_published"]:
+                print(f"      column set differs: {r['n_cols_only_here']} only here "
+                      f"({', '.join(r['cols_only_here'][:4])}...), "
+                      f"{r['n_cols_only_published']} only in the reference "
+                      f"({', '.join(r['cols_only_published'][:4])}...)")
+            print(f"      worst |delta mean| {r['worst_abs_mean_delta']:.2e} "
+                  f"({r['worst_abs_mean_delta_col']}), "
+                  f"|delta sd| {r['worst_abs_sd_delta']:.2e}, "
+                  f"|delta coverage| {r['worst_abs_coverage_delta']:.2e}; "
+                  f"median |delta mean| {r['median_abs_mean_delta']:.2e}")
+            if r["cols_over_threshold"]:
+                print(f"      first offenders: {', '.join(r['cols_over_threshold'])}")
         elif "frac_diff" in r:
             print(f"  {name}: {r['n_diff']}/{r['n_cols']} cols diverge "
-                  f"({r['frac_diff']:.1%}); file md5 match={r['file_md5_match']}; "
-                  f"row delta={r['row_count_delta']}")
+                  f"({r['frac_diff']:.1%}) -- hash metric, not a drift measure; "
+                  f"rows {r.get('row_count_delta', 0):+,}")
         else:
             print(f"  {name}: file md5 match={r.get('file_md5_match')}")
-    return 0
+
+    if rep.get("_note"):
+        print(f"\n  NOTE: {rep['_note']}")
+    if rep.get("_pass") is None:
+        print("  VERDICT: indeterminate (no comparable statistic published)")
+        return 0
+    th = rep["_thresholds"]
+    print(f"\n  thresholds: rows <= {th['max_row_delta_frac']:.1%}, "
+          f"per-column |delta mean| <= {th['max_abs_mean_delta']}, "
+          f"|delta sd| <= {th['max_abs_sd_delta']}, "
+          f"|delta coverage| <= {th['max_abs_coverage_delta']}")
+    print(f"  VERDICT: {'PASS' if rep['_pass'] else 'FAIL'}")
+    return 0 if rep["_pass"] else 1
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +302,15 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="data/raw")
     d.add_argument("--start-year", type=int, default=None)
     d.add_argument("--end-year", type=int, default=None)
+    d.add_argument("--intermediate-dir", default="data",
+                   help="where per-chunk fundq parquets are cached (default: data/)")
+    d.add_argument("--chunk-years", type=int, default=1,
+                   help="pull comp.fundq in N-year chunks (default 1; 0 = one query). "
+                        "Chunks are cached under <intermediate-dir>/raw_chunks so an "
+                        "interrupted pull resumes")
+    d.add_argument("--all-columns", action="store_true",
+                   help="SELECT f.* instead of the 82-column projection "
+                        "(~7.9x more data; ~100 GB peak over 1970-2024)")
     d.set_defaults(func=cmd_download)
 
     b = sub.add_parser("build", help="download (if needed) + process + verify checksums")
@@ -201,13 +318,19 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--raw", default="data/raw/compustat_with_permno.parquet")
     b.add_argument("--out", default="data/processed")
     b.add_argument("--tag", default=None, help="dataset tag (default: canonical R13 tag)")
-    b.add_argument("--reg-stats", default=None,
-                   help="normalize against a FROZEN regularization_stats parquet instead of "
-                        "re-estimating (pins the target/eval space across Compustat vintages); "
-                        "pass 'canonical' to use the bundled published R13 reg-stats")
+    b.add_argument("--reg-stats", default="canonical",
+                   help="which regularization statistics define the TARGET SPACE. "
+                        "'canonical' (default) pins the published R13 statistics, so your "
+                        "targets match the leaderboard's; 'estimate' re-estimates them from "
+                        "your own train split, which produces a DIFFERENT ground truth and "
+                        "non-comparable scores; or a path to a regularization_stats parquet")
     b.add_argument("--which", default="tabular,tuple")
     b.add_argument("--report-drift", action="store_true",
-                   help="quantify divergence from the canonical checksums instead of bit-verify")
+                   help="quantify divergence from the canonical checksums instead of bit-verify; "
+                        "exits non-zero if the divergence exceeds the published thresholds")
+    b.add_argument("--reference", default=None,
+                   help="compare against a reference build directory instead of the "
+                        "published checksums")
     b.add_argument("--no-verify", action="store_true")
     b.set_defaults(func=cmd_build)
 
@@ -241,6 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("report-drift", help="vintage divergence of a build vs canonical checksums")
     r.add_argument("--processed", default="data/processed")
     r.add_argument("--tag", default=None)
+    r.add_argument("--reference", default=None,
+                   help="compare against a reference build directory instead of the "
+                        "published checksums")
     r.set_defaults(func=cmd_report_drift)
 
     return p
