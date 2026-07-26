@@ -267,3 +267,29 @@ def test_validate_forecast_does_not_widen_the_target_column(tmp_path):
     with patch.object(pd.Series, "astype", watched):
         assert validate_forecast(fc, strict=False) == []
     assert calls == [], f"widened a {calls} -row column to fixed-width unicode"
+
+
+def test_streams_a_pyarrow_written_forecast(tmp_path):
+    """gh#12's repro artifact was written by pyarrow (`created_by =
+    parquet-cpp-arrow`) with no pandas categorical metadata, so its string
+    columns come back as object. That variant read ~17 GB and died; it must
+    stream and score identically to the in-memory path."""
+    pq = pytest.importorskip("pyarrow.parquet")
+    pa = pytest.importorskip("pyarrow")
+
+    truth = synthetic_truth(n_firms=20, n_q=4, seed=3)
+    fc = forecast_from_truth(truth, noise=0.3, sigma=0.6, seed=4)
+    internal = fc.rename(columns={"firm": "firm_id", "origin": "quarter",
+                                  "horizon": "forecast_horizon"})
+    internal["model"] = "forma_fgrid"          # an extra column we must ignore
+    path = tmp_path / "pyarrow_fc.parquet"
+    pq.write_table(pa.Table.from_pandas(internal, preserve_index=False), path,
+                   row_group_size=500)
+    assert pq.ParquetFile(path).metadata.num_row_groups > 1
+
+    streamed = evaluate_forecasts({"m": path}, truth, verbose=False)
+    frame = evaluate_forecasts({"m": fc}, truth, verbose=False)
+    assert streamed.n_common == frame.n_common > 0
+    a = streamed.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0]
+    b = frame.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0]
+    assert a == b
