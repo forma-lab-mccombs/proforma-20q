@@ -215,3 +215,56 @@ def test_drift_detects_changed_values(tmp_path):
     assert test_entry["pass"] is False
     assert test_entry["file_md5_match"] is False
     assert drift["_pass"] is False
+
+
+def test_drift_does_not_pass_on_a_column_set_mismatch(tmp_path):
+    """The symmetric failure to the old metric. `_compare_column_stats`
+    intersects the two column sets, so a build sharing NO columns with the
+    reference used to score `0/0 columns beyond tolerance` -> PASS, certified on
+    similar row counts alone."""
+    from proforma20q.checksums import _compare_column_stats, reference_record
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    published = reference_record(ref, SUFFIX)
+
+    # same shape and row count, entirely different column names
+    other = tmp_path / "other"
+    other.mkdir()
+    for split, seed in (("train", 1), ("val", 2), ("test", 3)):
+        df = _tabular_frame(seed).rename(columns=lambda c: c.replace("niq", "zzz")
+                                         .replace("revtq", "yyy"))
+        df.to_parquet(other / f"tabular_{split}__{SUFFIX}.parquet",
+                      engine=PARQUET_ENGINE, index=False)
+
+    rep = report_drift(other, SUFFIX, published=published)
+    entry = rep[f"tabular_test__{SUFFIX}.parquet"]
+    assert entry["n_cols"] == 0
+    assert entry["row_count_delta"] == 0          # row counts alone look fine
+    assert entry["pass"] is False                 # ... and that is not a pass
+    assert rep["_pass"] is False
+    # the mismatch is visible in the report, not just in the verdict
+    assert entry["n_cols_only_here"] > 0 and entry["n_cols_only_published"] > 0
+    assert entry["cols_only_published"]
+
+    # a PARTIAL overlap is also not a pass
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    for split, seed in (("train", 1), ("val", 2), ("test", 3)):
+        df = _tabular_frame(seed).drop(columns=["niq_t1"])
+        df.to_parquet(partial / f"tabular_{split}__{SUFFIX}.parquet",
+                      engine=PARQUET_ENGINE, index=False)
+    rep2 = report_drift(partial, SUFFIX, published=published)
+    e2 = rep2[f"tabular_test__{SUFFIX}.parquet"]
+    assert e2["n_cols"] > 0 and e2["n_cols_over_threshold"] == 0   # values agree
+    assert e2["n_cols_only_published"] == 1 and e2["pass"] is False
+
+    # and the helper itself reports the disjoint case honestly
+    cmp = _compare_column_stats({"a": {"n_finite": 1, "mean": 0.0, "sd": 1.0,
+                                       "coverage": 1.0}},
+                                {"b": {"n_finite": 1, "mean": 0.0, "sd": 1.0,
+                                       "coverage": 1.0}},
+                                {"max_abs_mean_delta": 0.05, "max_abs_sd_delta": 0.05,
+                                 "max_abs_coverage_delta": 0.02})
+    assert cmp["n_cols"] == 0 and cmp["n_cols_only_here"] == 1

@@ -327,3 +327,51 @@ def test_file_validation_streams_by_row_group(tmp_path):
     problems, n_rows = validate_forecast_file(bad)
     assert n_rows == len(fc)
     assert any("not among the 78 pf_full targets" in p for p in problems)
+
+
+def test_horizon_dtype_cannot_drift_between_blocks(tmp_path):
+    """`_forecast_payload` promises no dtype drift between blocks. A conditional
+    int64 cast broke that: one block with a null horizon wrote float64 and fixed
+    the file's schema as float."""
+    fc = _valid_fc()
+    blocks = _blocks(fc)
+    bad = blocks[1].copy()
+    bad.loc[bad.index[0], "horizon"] = np.nan
+    with pytest.raises(SubmissionError, match="horizon"):
+        write_forecast_blocks([blocks[0], bad], tmp_path / "fc.parquet", validate=False)
+
+    p = tmp_path / "ok.parquet"
+    write_forecast_blocks(blocks, p)
+    assert read_forecast(p, validate=False)["horizon"].dtype == np.int64
+
+
+def test_numeric_firm_ids_are_rejected_even_in_an_object_column():
+    """A frame built in memory (rather than read from parquet) can hold Python
+    ints in an object column -- exactly the case the gvkey check exists for."""
+    from proforma20q.schema import validate_forecast
+
+    fc = _valid_fc()
+    as_int = fc.assign(firm=pd.Series([int(f) for f in fc["firm"]], dtype=object))
+    assert any("gvkey string" in p for p in validate_forecast(as_int, strict=False))
+    as_int64 = fc.assign(firm=[int(f) for f in fc["firm"]])
+    assert any("gvkey string" in p for p in validate_forecast(as_int64, strict=False))
+    assert validate_forecast(fc, strict=False) == []
+    # a categorical of proper gvkey strings still passes
+    assert validate_forecast(fc.assign(firm=fc["firm"].astype("category")),
+                             strict=False) == []
+
+
+def test_one_scan_serves_both_problems_and_warnings(tmp_path):
+    """Calling validate_forecast_file + forecast_file_warnings scans a ~550M-row
+    file twice, which is what streaming exists to avoid."""
+    from proforma20q.schema import scan_forecast_file
+
+    fc = _valid_fc()
+    holed = fc.copy()
+    holed.loc[holed.index[:5], "prediction"] = np.inf
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(_blocks(holed), p, rows_per_group=7, validate=False)
+
+    problems, n_rows, warnings = scan_forecast_file(p)
+    assert problems == [] and n_rows == len(fc)
+    assert any("non-finite" in w for w in warnings)

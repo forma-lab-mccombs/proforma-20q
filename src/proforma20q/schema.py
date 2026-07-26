@@ -138,13 +138,18 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True,
             problems.append(f"{col} has {n_null} null value(s); key columns must be complete")
 
     # firm must be the truth file's gvkey STRING ("001045"). An integer 1045
-    # validates as a plausible id and then matches nothing at all.
-    firm_dtype = df[FIRM_COL].dtype
-    if not (firm_dtype == object or isinstance(firm_dtype, pd.CategoricalDtype)
-            or pd.api.types.is_string_dtype(firm_dtype)):
+    # validates as a plausible id and then matches nothing at all. Checked on the
+    # inferred CONTENT, not just the dtype: an object column can hold Python
+    # ints, which is exactly what a frame built in memory (rather than read from
+    # parquet) tends to produce.
+    firm = df[FIRM_COL]
+    if isinstance(firm.dtype, pd.CategoricalDtype):
+        firm = pd.Series(firm.cat.categories)
+    inferred = pd.api.types.infer_dtype(firm, skipna=True)
+    if inferred not in ("string", "unicode", "empty"):
         problems.append(
-            f"{FIRM_COL} must be the gvkey string (e.g. '001045'), not "
-            f"{firm_dtype}; a numeric id will not join to the truth file")
+            f"{FIRM_COL} must be the gvkey string (e.g. '001045'); this column "
+            f"holds {inferred} values, which will not join to the truth file")
 
     # prediction numeric and not all null. ``check_all_null`` is off when
     # validating one block of a streamed write: a single (target, horizon) with
@@ -233,7 +238,7 @@ def validate_forecast_file(path, *, strict: bool = False) -> tuple[list[str], in
     Returns ``(problems, n_rows)``. Advisory warnings (coverage, out-of-range
     magnitudes) are returned by :func:`forecast_file_warnings`.
     """
-    problems, n_rows, _warn = _scan_forecast_file(path)
+    problems, n_rows, _warn = scan_forecast_file(path)
     if strict and problems:
         raise SubmissionError("; ".join(problems))
     return problems, n_rows
@@ -241,10 +246,17 @@ def validate_forecast_file(path, *, strict: bool = False) -> tuple[list[str], in
 
 def forecast_file_warnings(path) -> list[str]:
     """Advisory warnings for a forecast file, accumulated over its row-groups."""
-    return _scan_forecast_file(path)[2]
+    return scan_forecast_file(path)[2]
 
 
-def _scan_forecast_file(path) -> tuple[list[str], int, list[str]]:
+def scan_forecast_file(path) -> tuple[list[str], int, list[str]]:
+    """One streaming pass over a forecast file: ``(problems, n_rows, warnings)``.
+
+    The public entry point for checking a whole file. :func:`validate_forecast_file`
+    and :func:`forecast_file_warnings` are conveniences over it, but calling both
+    scans a ~550M-row submission twice -- which is exactly what streaming exists
+    to avoid. Prefer this.
+    """
     import fastparquet  # noqa: PLC0415
 
     pf = fastparquet.ParquetFile(str(path))
@@ -339,7 +351,14 @@ def _forecast_payload(df: pd.DataFrame) -> pd.DataFrame:
         origin = pd.to_datetime(origin)
     out[ORIGIN_COL] = origin.astype("datetime64[ns]")
 
-    if HORIZON_COL in out.columns and out[HORIZON_COL].notna().all():
+    if HORIZON_COL in out.columns:
+        # Unconditional, so the "no drift between blocks" guarantee actually
+        # holds: a conditional cast would let one block with a null horizon write
+        # float64 and silently fix the file's schema as float.
+        if not out[HORIZON_COL].notna().all():
+            raise SubmissionError(
+                f"{HORIZON_COL} has {int(out[HORIZON_COL].isna().sum())} null "
+                "value(s); it is a key column and must be a whole number 1..20")
         out[HORIZON_COL] = out[HORIZON_COL].astype("int64")
 
     for col in (PREDICTION_COL, SIGMA_COL):

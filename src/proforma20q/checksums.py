@@ -236,6 +236,8 @@ def _compare_column_stats(built: dict, ref: dict, thresholds: dict) -> dict:
     out right" is a number with a scale, not a boolean.
     """
     shared = sorted(set(built) & set(ref))
+    only_here = sorted(set(built) - set(ref))
+    only_ref = sorted(set(ref) - set(built))
     worst = {"mean": 0.0, "sd": 0.0, "coverage": 0.0}
     worst_col = {"mean": None, "sd": None, "coverage": None}
     offenders: list[str] = []
@@ -264,6 +266,13 @@ def _compare_column_stats(built: dict, ref: dict, thresholds: dict) -> dict:
     return {
         "n_cols": len(shared),
         "n_cols_over_threshold": len(offenders),
+        # A column set that does not line up is itself the finding. Reported so a
+        # mismatch cannot pass as "0 columns over threshold" -- the symmetric
+        # failure to the old metric, and the more dangerous direction.
+        "cols_only_here": only_here[:10],
+        "cols_only_published": only_ref[:10],
+        "n_cols_only_here": len(only_here),
+        "n_cols_only_published": len(only_ref),
         "frac_cols_over_threshold": (len(offenders) / len(shared)) if shared else float("nan"),
         "worst_abs_mean_delta": round(worst["mean"], 6),
         "worst_abs_mean_delta_col": worst_col["mean"],
@@ -342,7 +351,14 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
                 have_stats = True
                 entry.update(_compare_column_stats(
                     column_stats(df), pentry["column_stats"], thresholds))
-                ok = (entry["row_count_delta_frac"] <= thresholds["max_row_delta_frac"]
+                # A comparison over ZERO shared columns is not a pass -- it is a
+                # non-comparison, and passing it on similar row counts alone
+                # would certify a build nothing was actually checked against.
+                # Likewise any column present on one side only.
+                ok = (entry["n_cols"] > 0
+                      and entry["n_cols_only_here"] == 0
+                      and entry["n_cols_only_published"] == 0
+                      and entry["row_count_delta_frac"] <= thresholds["max_row_delta_frac"]
                       and entry["n_cols_over_threshold"] == 0)
                 entry["pass"] = bool(ok)
                 verdicts.append(bool(ok))

@@ -33,6 +33,9 @@ from .config import load_task_config
 # feature_sets.yaml -- not an attacker -- the realistic way something else
 # arrives here; either way it must not become part of the query.
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+# `schema.table`, and the short alphanumeric codes of the CCM link columns.
+_QUALIFIED_NAME = re.compile(r"[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?\Z")
+_LINK_CODE = re.compile(r"[A-Za-z0-9]{1,4}\Z")
 
 # Canonical Compustat query filters (configs/task.yaml -> universe).
 _COMPUSTAT_FILTERS = {"indfmt": "INDL", "datafmt": "STD", "consol": "C", "popsrc": "D"}
@@ -46,13 +49,29 @@ _CCM_TABLE = "crsp.ccmxpf_lnkhist"
 
 
 def crsp_link_config() -> dict:
-    """The CRSP link filter, from ``task.yaml`` (falling back to the constants)."""
+    """The CRSP link filter, from ``task.yaml`` (falling back to the constants).
+
+    Validated on the way out for the same reason the fundq projection is: every
+    field here is interpolated into SQL, and a typo in ``task.yaml`` -- not an
+    attacker -- is the realistic way something unexpected arrives. A clear config
+    error beats a confusing Postgres one.
+    """
     cfg = load_task_config().get("universe", {}).get("crsp_link", {}) or {}
-    return {
-        "table": cfg.get("table", _CCM_TABLE),
+    table = str(cfg.get("table", _CCM_TABLE))
+    if not _QUALIFIED_NAME.match(table):
+        raise ValueError(
+            f"universe.crsp_link.table is not a plain [schema.]table name: {table!r}")
+    out = {
+        "table": table,
         "linktype": tuple(cfg.get("linktype", _CCM_LINKTYPE)),
         "linkprim": tuple(cfg.get("linkprim", _CCM_LINKPRIM)),
+        "impose_link_dates": bool(cfg.get("impose_link_dates", True)),
     }
+    for field in ("linktype", "linkprim"):
+        bad = [v for v in out[field] if not _LINK_CODE.match(str(v))]
+        if bad:
+            raise ValueError(f"universe.crsp_link.{field} has non-code value(s): {bad}")
+    return out
 
 # Postgres declared type -> the dtype a fully-populated column would arrive as.
 _PG_NUMERIC = ("double precision", "real", "numeric", "decimal",
@@ -325,6 +344,13 @@ def download(
                       f"(pulled {age:%Y-%m-%d}, {len(cached):,} rows)")
                 chunks.append(cached)
                 continue
+            # ORDER BY is not cosmetic. Postgres row order is unspecified without
+            # it, and the input order decides which of a duplicate firm-quarter
+            # pair survives `convert_ytd_to_quarterly`'s de-duplication (pandas
+            # multi-column sort_values is a stable lexsort, so ties keep input
+            # order). Pinning it here is what makes that outcome reproducible --
+            # run to run, and between a chunked and a one-shot pull. It also
+            # makes cached chunks byte-comparable.
             part = db.raw_sql(f"""
                 SELECT {proj}
                 FROM comp.fundq AS f
@@ -333,6 +359,7 @@ def download(
                   AND f.datafmt = '{f['datafmt']}'
                   AND f.consol  = '{f['consol']}'
                   AND f.popsrc  = '{f['popsrc']}'
+                ORDER BY f.gvkey, f.datadate
             """)
             # Per chunk, BEFORE the concat: a column that is all-NULL in one year
             # arrives as `object` and would poison the concatenated column.
@@ -412,7 +439,8 @@ def download(
 
     # -- Merge link -> permno, imposing link date ranges --
     print("Merging link table to attach permno...")
-    ccm = attach_permno(compustat_df, link_df)
+    ccm = attach_permno(compustat_df, link_df,
+                        impose_link_dates=link_cfg["impose_link_dates"])
 
     out_path = out_dir / "compustat_with_permno.parquet"
     ccm.to_parquet(out_path, index=False, engine="fastparquet")
@@ -420,7 +448,8 @@ def download(
     return out_path
 
 
-def attach_permno(compustat_df: pd.DataFrame, link_df: pd.DataFrame) -> pd.DataFrame:
+def attach_permno(compustat_df: pd.DataFrame, link_df: pd.DataFrame,
+                  *, impose_link_dates: bool = True) -> pd.DataFrame:
     """Attach CRSP ``permno`` / ``permco`` to the Compustat panel via the CCM link
     table, imposing link date ranges.
 
@@ -441,7 +470,18 @@ def attach_permno(compustat_df: pd.DataFrame, link_df: pd.DataFrame) -> pd.DataF
     merged["linkenddt"] = pd.to_datetime(merged["linkenddt"]).fillna(pd.Timestamp.max)
     merged["jdate"] = merged["datadate"] + MonthEnd(0)
     merged["year"] = merged["datadate"].dt.year
-    ccm = merged[(merged["datadate"] >= merged["linkdt"]) & (merged["datadate"] <= merged["linkenddt"])]
+    if impose_link_dates:
+        ccm = merged[(merged["datadate"] >= merged["linkdt"])
+                     & (merged["datadate"] <= merged["linkenddt"])]
+    else:
+        # Configurable because task.yaml is the declared source of truth for the
+        # sample definition, but this is not a tuning knob: the date window is
+        # what makes the merge a FILTER rather than an enrichment, and dropping
+        # it yields a different, larger universe than the published one.
+        print("  WARNING: universe.crsp_link.impose_link_dates is false -- link "
+              "date windows are NOT applied. The resulting sample is NOT the "
+              "published one and its scores are not comparable.")
+        ccm = merged
     ccm = ccm.drop(columns=["linktype", "linkdt", "linkenddt", "linkprim"])
     ccm = ccm.rename(columns={"lpermno": "permno", "lpermco": "permco"})
     return ccm

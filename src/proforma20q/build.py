@@ -516,6 +516,10 @@ def prepare_panel(raw_df: pd.DataFrame, items: list[str], *,
     present_items = list(dict.fromkeys(it for it in items if it in raw_df.columns))
     if "scale" not in raw_df.columns:
         raise KeyError("prepare_panel requires the 'scale' column (see compute_scale)")
+    if len(raw_df) == 0:
+        raise ValueError(
+            "the prepped panel is empty; nothing survived the sector exclusion / "
+            "YTD conversion. Check the raw panel's date range and `sich` column.")
     value_cols = list(dict.fromkeys(present_items + ["scale"]))
 
     codes, uniques = pd.factorize(raw_df[firm_col], sort=True)
@@ -605,7 +609,16 @@ def _lead(vals: np.ndarray, lead: int, pos_from_end: np.ndarray) -> np.ndarray:
 
 def _stats_arrays(reg_stats: pd.DataFrame, q_lo: int, n_q: int) -> dict[str, tuple]:
     """feature -> (mu, sigma) as dense arrays indexed by ``qord - q_lo``."""
-    rs = reg_stats.drop_duplicates(subset=["feature", "quarter"])
+    dup = reg_stats.duplicated(subset=["feature", "quarter"])
+    if dup.any():
+        # The pre-rewrite lookup (`Series.map` on a quarter-indexed frame) raised
+        # on a duplicated index. Silently keeping the first would let a malformed
+        # reg-stats artifact define the target space.
+        first = reg_stats.loc[dup, ["feature", "quarter"]].head(3).to_dict("records")
+        raise ValueError(
+            f"regularization stats have {int(dup.sum())} duplicate (feature, quarter) "
+            f"row(s), e.g. {first}; they define the target space and must be unique")
+    rs = reg_stats
     pos = _quarter_ordinals(rs["quarter"]) - q_lo
     inside = (pos >= 0) & (pos < n_q)
     feat = rs["feature"].to_numpy()
@@ -1208,9 +1221,11 @@ def build(
         # from the tuple view at all. They also pin the ordering rule: account and
         # industry ids are embedding indices, so a build whose ordering differs
         # from the one a checkpoint was trained under silently permutes them.
-        written.update(write_id_maps(out_dir, suffix, firm_id_map, account_id_map))
+        id_paths = write_id_maps(out_dir, suffix, firm_id_map, account_id_map)
+        written.update(id_paths)
+        n_ind = sum(1 for _ in open(id_paths["industry_id_map"], encoding="utf-8")) - 1
         log(f"  id maps: {len(firm_id_map):,} firms, {len(account_id_map)} accounts, "
-            f"{len(_ff48_flat()[2])} industries")
+            f"{n_ind} industries (incl. the unknown reference level)")
         tr, va, te = split_tuple(tup, splits["train_end_year"], splits["val_end_year"],
                                  pre_quarters=fe["recent_levels"] + fe["yoy_changes"] - 1)
         for name, part in (("train", tr), ("val", va), ("test", te)):

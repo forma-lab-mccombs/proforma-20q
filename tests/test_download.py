@@ -339,3 +339,58 @@ def test_coerce_declared_dtypes_uses_declarations_not_content():
     assert list(out["gvkey"]) == ["001000", "001001"]
     # no declarations -> nothing is coerced, so the all-NULL column stays as it was
     assert coerce_declared_dtypes(df.copy(), {})["oancfy"].dtype == df["oancfy"].dtype
+
+
+def test_crsp_link_config_is_validated_like_the_projection():
+    """Every field here is interpolated into SQL from the same trust level as the
+    fundq projection, so it gets the same treatment."""
+    from unittest.mock import patch
+
+    import proforma20q.download as dl
+
+    good = dl.crsp_link_config()
+    assert good["table"] == "crsp.ccmxpf_lnkhist"
+    assert good["impose_link_dates"] is True
+
+    for bad in ({"table": "crsp.lnk; DROP TABLE x"},
+                {"linktype": ["LU", "L'U"]},
+                {"linkprim": ["P", "C; --"]}):
+        cfg = {"universe": {"crsp_link": {**good, **bad}}}
+        with patch.object(dl, "load_task_config", lambda: cfg):
+            with pytest.raises(ValueError):
+                dl.crsp_link_config()
+
+
+def test_chunk_query_is_ordered(tmp_path):
+    """Postgres row order is unspecified without ORDER BY, and the input order
+    decides which of a duplicate firm-quarter pair survives de-duplication
+    downstream (pandas multi-column sort_values is a stable lexsort). Without
+    this the 'stable sort' determinism fix is conditional on the DB."""
+    db = _StubWRDS()
+    download("tester", out_dir=tmp_path / "raw", start_year=1996, end_year=1997,
+             intermediate_dir=tmp_path, connection=db)
+    for q in db.fundq_queries():
+        assert "ORDER BY f.gvkey, f.datadate" in q
+
+
+def test_impose_link_dates_is_wired_to_the_config(tmp_path):
+    """task.yaml is the declared source of truth for the sample definition, so a
+    key in it that changes nothing is worse than no key at all."""
+    from unittest.mock import patch
+
+    import proforma20q.download as dl
+
+    comp = pd.DataFrame({"gvkey": ["001", "001"],
+                         "datadate": pd.to_datetime(["2000-03-31", "2010-03-31"]),
+                         "atq": [1.0, 2.0]})
+    link = pd.DataFrame([_link_row("001", 10001, 20001, "1999-01-01", "2005-12-31")])
+
+    assert len(dl.attach_permno(comp, link)) == 1                          # filtered
+    assert len(dl.attach_permno(comp, link, impose_link_dates=False)) == 2  # not
+
+    cfg = load_task_config_copy = dl.load_task_config()
+    import copy
+    cfg = copy.deepcopy(cfg)
+    cfg["universe"]["crsp_link"]["impose_link_dates"] = False
+    with patch.object(dl, "load_task_config", lambda: cfg):
+        assert dl.crsp_link_config()["impose_link_dates"] is False

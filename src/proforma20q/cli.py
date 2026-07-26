@@ -32,7 +32,10 @@ def _default_suffix(tag: str | None = None) -> str:
 # The `wrds` client surfaces a bad/absent credential as a bare EOFError from the
 # input() prompt it falls back to, or as an OperationalError from psycopg2. Both
 # reach the user as a traceback that says nothing about credentials.
-_AUTH_ERRORS = (EOFError, KeyboardInterrupt)
+# NOT KeyboardInterrupt: it is a BaseException, so `except Exception` never sees
+# it -- and a Ctrl-C during a ~1-hour pull must not be reported as an auth
+# failure, which is the one error here that carries a lockout warning.
+_AUTH_ERRORS = (EOFError,)
 _AUTH_HINT = (
     "WRDS authentication failed.\n"
     "  - check the username, and that your pgpass file exists and is readable:\n"
@@ -182,11 +185,12 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_validate(args) -> int:
-    from .schema import _scan_forecast_file
+    from .schema import scan_forecast_file
     # Streamed by row-group: a full-coverage submission is ~550M rows / ~73 GB
-    # as a frame, so validation cannot start by reading the file.
+    # as a frame, so validation cannot start by reading the file. One pass, not
+    # one per kind of finding.
     try:
-        problems, n_rows, warnings = _scan_forecast_file(args.forecast)
+        problems, n_rows, warnings = scan_forecast_file(args.forecast)
     except Exception as e:  # noqa: BLE001
         print(f"FAILED to read {args.forecast}: {e}", file=sys.stderr)
         return 2
@@ -251,6 +255,13 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
             print(f"  [{verdict}] {name}")
             print(f"      rows {r['row_count_delta']:+,} ({r['row_count_delta_frac']:.3%}); "
                   f"{r['n_cols_over_threshold']}/{r['n_cols']} columns beyond tolerance")
+            if r["n_cols"] == 0:
+                print("      NO COLUMNS IN COMMON -- nothing was compared; this is not a pass")
+            if r["n_cols_only_here"] or r["n_cols_only_published"]:
+                print(f"      column set differs: {r['n_cols_only_here']} only here "
+                      f"({', '.join(r['cols_only_here'][:4])}...), "
+                      f"{r['n_cols_only_published']} only in the reference "
+                      f"({', '.join(r['cols_only_published'][:4])}...)")
             print(f"      worst |delta mean| {r['worst_abs_mean_delta']:.2e} "
                   f"({r['worst_abs_mean_delta_col']}), "
                   f"|delta sd| {r['worst_abs_sd_delta']:.2e}, "
