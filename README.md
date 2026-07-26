@@ -9,9 +9,13 @@ ICAIF '26 paper; you then train *your* model and score a forecast file with our
 CLI. It is usable by someone who has never heard of the Forma model — build the
 data, train, submit.
 
-> **No data is distributed here.** The repository contains code, configs, and
-> checksums only. WRDS / Compustat / CRSP credentials and license are entirely
-> the user's responsibility.
+> **No firm-level data is distributed here.** The repository contains code,
+> configs and checksums, plus two Compustat-*derived* aggregates that carry no
+> firm-level values: the published canonical regularization statistics
+> (per-`(feature, quarter)` `mu`/`sigma`/`k` moments, in
+> `src/proforma20q/reference/`) and the Full-sample coverage bitmap (in
+> `artifacts/`). WRDS / Compustat / CRSP credentials and license are entirely the
+> user's responsibility.
 
 ---
 
@@ -123,8 +127,8 @@ python -c "import wrds; db = wrds.Connection(wrds_username='<user>'); print(db.r
 
 ### What you can do *without* credentials
 
-Works: `pip install -e .[dev]` and the full test suite (105 tests, all
-synthetic); `proforma20q validate <file>`; `proforma20q evaluate <file> --truth
+Works: `pip install -e .[dev]` and the full test suite (all synthetic, no WRDS);
+`proforma20q validate <file>`; `proforma20q evaluate <file> --truth
 examples/example_truth.parquet`; reading `task.yaml` / `feature_sets.yaml`;
 verifying `artifacts/full_sample_mask_bits.npy` against its manifest.
 
@@ -171,7 +175,7 @@ data, ~100 GB peak over 1970–2024 — it does not complete on an ordinary
 machine). `build --raw` applies the same projection when reading the panel, so
 an existing `SELECT f.*` parquet costs no more than a projected one.
 
-### Which reg-stats? — the flag that changes your ground truth
+### Which reg stats: the flag that changes your ground truth
 
 `--reg-stats` selects the statistics that define the **regularized target
 space**, i.e. the ground truth you are scored against. It is not a tuning knob:
@@ -388,13 +392,32 @@ proforma20q evaluate my_forecasts.parquet --against baselines \
     --sample-mask artifacts/full_sample_mask_bits.npy
 ```
 
-The mask is a keys table (`firm, target, origin, horizon`) or a compact
-grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no
-firm identifiers). **The prebuilt grid-aligned mask ships in this repository** at
+The mask comes in two interchangeable forms, and **which one you need depends on
+your vintage**:
+
+| form | matches by | survives vintage drift? |
+|---|---|---|
+| grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no firm identifiers) | **position** | **no** — it is a bitmap over an exact 352,962-row set, so a rebuild that gains or loses one test row cannot use it |
+| keys table (`firm, target, origin, horizon`) | **value** | **yes** — it intersects with whatever rows your build has |
+
+**The prebuilt grid-aligned mask ships in this repository** at
 [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy)
 (~66 MB; md5 `a36008d8…`, pinned in
 [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
-so the command above needs no download. Because the reference model's coverage is
+so the command above needs no download — *if* your `tabular_test` is
+row-identical to the canonical one. Since the README says elsewhere that it will
+not be, convert it once to the portable form against the canonical build:
+
+```bash
+python scripts/build_full_sample_mask.py --from-bits artifacts/full_sample_mask_bits.npy \
+    --truth <canonical tabular_test>.parquet --out artifacts --expect 327244429
+proforma20q evaluate my_forecasts.parquet --against baselines \
+    --sample-mask artifacts/full_sample_mask_keys.parquet
+```
+
+That conversion needs only the bit array and the canonical `tabular_test` — not
+the Forma forecast, which is deferred to publication. `evaluate` names this path
+in its error message if you hand it a bit array that does not fit your grid. Because the reference model's coverage is
 the binding constraint, the Full mask is exactly *its finite-prediction cells ∩
 truth*; `scripts/build_full_sample_mask.py` also rebuilds and verifies it
 (`--expect 327244429`) offline from the Forma forecast, reproducing the same md5.
@@ -419,8 +442,15 @@ coverage limits.
 
 ## Data & artifacts
 
-**No WRDS-derived data is distributed** — you rebuild the tabular/tuple artifacts
-yourself from your own Compustat licence (`proforma20q build`).
+**No firm-level WRDS-derived data is distributed** — you rebuild the
+tabular/tuple artifacts yourself from your own Compustat licence
+(`proforma20q build`). Two Compustat-derived *aggregates* do ship, because
+neither can reveal a firm's values and both are needed to reproduce the paper:
+
+| artifact | what it is | why it is safe |
+|---|---|---|
+| `src/proforma20q/reference/regularization_stats__*.parquet` | per-`(feature, quarter)` `mu` / `sigma` / `k` | cross-sectional moments over thousands of firms; used by `--reg-stats canonical` to pin the target space |
+| [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | a coverage bitmap | one bit per grid cell, no identifiers and no values |
 
 The **Full-sample mask ships in this repository** — it holds only a coverage
 bitmap, no firm-level values:
@@ -466,7 +496,8 @@ paper's evaluation to the digit — tracked, not forked.
 ## License
 
 Code is licensed **Apache-2.0** (see [LICENSE](LICENSE) / [NOTICE](NOTICE)). **No
-data is distributed**; you are responsible for your WRDS/Compustat/CRSP license.
+firm-level data is distributed** (see [Data & artifacts](#data--artifacts)); you
+are responsible for your WRDS/Compustat/CRSP license.
 The FF48 industry classification derives from the Kenneth R. French Data Library.
 
 If you use ProForma-20Q, please cite it — see [CITATION.cff](CITATION.cff).
