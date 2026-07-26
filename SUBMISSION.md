@@ -85,11 +85,17 @@ Two properties worth knowing:
   `<name>.parquet.partial` and are renamed into place only when the last block
   is written, so a run that dies at block 1,400 of 1,560 cannot leave a
   well-formed parquet that would score as an intentional partial-coverage entry.
-- **`proforma20q validate` streams the finished file row-group by row-group**
-  (it cannot load it — ~550M rows is ~73 GB as a frame, dominated by the `firm`
-  and `target` string columns). It therefore checks every row-group in full but
-  does **not** detect duplicate keys that span two row-groups. A writer that
-  emits one row-group per `(target, horizon)` cannot produce them.
+- **`validate` and `evaluate` both stream the finished file row-group by
+  row-group** — neither loads it, since ~550M rows is ~73 GB as a frame,
+  dominated by the `firm` and `target` string columns. Measured: scoring a
+  full-scale submission against the canonical truth takes **7.3 min at 12.2 GB
+  peak**. `validate` checks every row-group in full but does **not** detect
+  duplicate keys that span two row-groups; a writer that emits one row-group per
+  `(target, horizon)` cannot produce them.
+
+Write your submission with **pandas categorical metadata** on `firm` and
+`target` if you can (`write_forecast_blocks` does). It costs nothing to read and
+keeps the string columns dictionary-encoded rather than widening to `object`.
 
 ## Density family (probabilistic track)
 

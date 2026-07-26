@@ -374,3 +374,50 @@ def test_frozen_reg_stats_are_consumed(tmp_path):
     va, vb = a["niq_level_0"].to_numpy(), b["niq_level_0"].to_numpy()
     both = np.isfinite(va) & np.isfinite(vb)
     assert both.any() and not np.allclose(va[both], vb[both])
+
+
+def test_build_persists_the_tuple_id_maps(tmp_path):
+    """The tuple view stores integer ids; the submission schema needs the gvkey
+    string and the item name. The maps are the only bridge, so a build that
+    drops them cannot yield a valid submission from the tuple view at all."""
+    from proforma20q.build import read_id_maps
+
+    raw = synthetic_raw(n_firms=9)
+    raw_path = tmp_path / "raw.parquet"
+    raw.to_parquet(raw_path, engine="fastparquet", index=False)
+    out = build(raw_path, tmp_path / "proc", dataset_tag="ids", which=("tuple",),
+                verbose=False)
+    for key in ("firm_id_map", "account_id_map", "industry_id_map"):
+        assert key in out and out[key].exists()
+
+    maps = read_id_maps(tmp_path / "proc", "pf_full__ids")
+    tup = pd.read_parquet(out["tuple_test"], engine="fastparquet")
+
+    # every integer id in the artifact resolves through the maps
+    firm = maps["firm_id_map"].set_index("firm_id_int")["firm_id"]
+    acct = maps["account_id_map"].set_index("account_id")["account_name"]
+    assert set(tup["firm_id"]).issubset(set(firm.index))
+    assert set(tup["account_id"]).issubset(set(acct.index))
+    assert set(tup["industry_id"]).issubset(set(maps["industry_id_map"]["industry_id"]))
+
+    # ... and back to the identifiers the submission schema requires
+    gvkeys = set(raw["gvkey"].astype(str))
+    assert set(firm.loc[sorted(set(tup["firm_id"]))]).issubset(gvkeys)
+    assert "niq" in set(acct)
+
+
+def test_id_maps_preserve_zero_padded_gvkeys(tmp_path):
+    """CSV has no types: a default read turns the gvkey "001045" into 1045, which
+    joins to nothing in the truth file. The bundled reader must not."""
+    from proforma20q.build import read_id_maps, write_id_maps
+
+    out_dir = tmp_path / "proc"
+    out_dir.mkdir()
+    firm_map = {"001045": 0, "001004": 1, "0012345": 2}
+    write_id_maps(out_dir, "pf_full__z", firm_map, {"niq": 0, "atq": 1})
+
+    naive = pd.read_csv(out_dir / "firm_id_map__pf_full__z.csv")
+    assert naive["firm_id"].dtype != object     # the trap: silently numeric
+
+    maps = read_id_maps(out_dir, "pf_full__z")
+    assert set(maps["firm_id_map"]["firm_id"]) == set(firm_map)

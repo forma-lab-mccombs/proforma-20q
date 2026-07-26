@@ -87,7 +87,12 @@ Measured on the canonical 1970–2024 panel, 34 GB workstation:
   "reproduce the baselines" as a quick check.
 - A full-coverage forecast is **549,285,360 rows**. Never assemble one as a
   single frame; use `proforma20q.schema.write_forecast_blocks`. Reading one back
-  as a frame needs ~73 GB — `validate` streams it by row-group instead.
+  as a frame needs ~73 GB, so nothing in the CLI does: `validate` and `evaluate`
+  both stream it by row-group. Measured end to end, scoring one full-scale
+  submission against the canonical truth took **7.3 min at 12.2 GB peak**, of
+  which 3.8 GB is the truth frame and ~2.2 GB the dense residual array (per
+  model — budget that much again for each extra model in the comparison).
+  `read_forecast` still materializes; it is for small files.
 - When concatenating per-year panels yourself, take dtypes from the **Postgres
   declarations**, not from the chunks: a column that is entirely NULL in one year
   arrives as `object` and will stringify a genuinely numeric column across every

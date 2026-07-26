@@ -215,6 +215,28 @@ output file is named `compustat_with_permno.parquet` after the column that does
 not matter rather than the filter that does; the name is retained for
 compatibility with existing pipelines.)
 
+### If you train on the tuple view: the id maps
+
+The tuple view stores `firm_id`, `account_id` and `industry_id` as **integers**,
+while a submission needs the gvkey string (`"001045"`) and the pf_full item name
+(`"niq"`). A build therefore also writes the three dictionaries that bridge them,
+next to the artifacts:
+
+```
+firm_id_map__<suffix>.csv        account_id_map__<suffix>.csv
+industry_id_map__<suffix>.csv
+```
+
+Read them with `proforma20q.build.read_id_maps(processed_dir, suffix)` rather
+than a bare `read_csv`: `firm_id` is a **zero-padded** gvkey, and CSV has no
+types, so a default read turns `"001045"` into the integer `1045` — which then
+matches nothing in the truth file, silently.
+
+These files also pin the ordering rule (ids are assigned by `sorted()`), which
+matters because account and industry ids are embedding indices: a build whose
+ordering differs from the one a checkpoint was trained under permutes its
+embeddings without any error.
+
 ### A third of the sample has no industry
 
 FF48 comes from each firm's modal `sich`. On the canonical build **18,648 of

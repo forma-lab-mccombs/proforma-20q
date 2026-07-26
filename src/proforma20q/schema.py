@@ -100,9 +100,18 @@ def validate_forecast(df: pd.DataFrame, *, strict: bool = True,
     # target: every value must be one of the 78 pf_full items (a misspelled
     # target would otherwise validate and then silently drop out of the
     # common-sample join in evaluate, scoring on only the rows that matched).
+    #
+    # Checked over the DISTINCT names, never the column. `.astype(str)` builds a
+    # fixed-width unicode array -- 13 chars x 4 bytes x 472.7M rows = 22.9 GiB on
+    # a full-coverage submission, however compactly the column is stored. The
+    # check is over a set of at most a few dozen names; it costs O(distinct).
     valid_targets = set(pf_full_targets())
-    tgt = df[TARGET_COL].astype(str)
-    unknown = sorted(set(tgt[~tgt.isin(valid_targets)]))
+    tgt = df[TARGET_COL]
+    if isinstance(tgt.dtype, pd.CategoricalDtype):
+        names = tgt.cat.categories          # free: already the distinct values
+    else:
+        names = pd.unique(tgt)
+    unknown = sorted({str(x) for x in names} - valid_targets)
     if unknown:
         shown = ", ".join(unknown[:10])
         more = f", ... (+{len(unknown) - 10} more)" if len(unknown) > 10 else ""

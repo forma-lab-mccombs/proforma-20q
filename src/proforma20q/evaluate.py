@@ -40,8 +40,8 @@ import numpy as np
 import pandas as pd
 from scipy.special import ndtr, stdtr  # standard-normal / Student-t CDF (vectorized)
 
-from .schema import SIGMA_COL, normalize_columns, read_forecast
-from .truth_grid import TruthGrid, build_residual
+from .schema import SIGMA_COL, normalize_columns
+from .truth_grid import TruthGrid, build_residual, build_residual_from_path
 
 # Aggregation levels (group keys); empty list == the global pool.
 AGG_LEVELS: dict[str, list[str]] = {
@@ -285,11 +285,13 @@ def evaluate_forecasts(
         try:
             if isinstance(obj, (str, Path)):
                 fam = families.get(name) or _read_family_sidecar(obj)
-                fdf = read_forecast(obj, validate=True, strict=False)
+                # Streamed by row-group. Reading a full-coverage submission as a
+                # frame needs tens of GB (the string key columns dominate), which
+                # made the benchmark's own headline artifact unscoreable.
+                cache = build_residual_from_path(obj, grid, log=log)
             else:
                 fam = families.get(name, ("gaussian", None))
-                fdf = normalize_columns(obj)
-            cache = build_residual(fdf, grid)
+                cache = build_residual(normalize_columns(obj), grid)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{name} ({e})")
             continue

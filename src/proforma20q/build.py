@@ -1025,6 +1025,67 @@ def build_tuple(raw_df, account_cols, firm_ind, *, firm_col="firm_id", qcol="qua
     return out, firm_id_map, account_id_map
 
 
+def write_id_maps(out_dir, suffix: str, firm_id_map: dict, account_id_map: dict) -> dict:
+    """Persist the tuple view's integer-id dictionaries next to the artifacts.
+
+    Three CSVs -- ``firm_id_map``, ``account_id_map``, ``industry_id_map`` --
+    written with the id column first and sorted by id. Without them the tuple
+    view's ``firm_id`` / ``account_id`` / ``industry_id`` integers cannot be
+    translated back into the gvkey strings and pf_full item names the submission
+    schema requires, so a model trained on the tuple view has no route to a valid
+    submission. ``.csv`` is git-ignored, so these stay untracked build outputs
+    like every other WRDS-derived file.
+    """
+    out_dir = Path(out_dir)
+    _ranges, unknown_id, id_to_name = _ff48_flat()
+    # `_ff48_flat` returns only the 48 named industries; the tuple view's
+    # industry_id also takes `unknown_id`, which is the modal value -- 44.8% of
+    # firms and 32.3% of rows map to it. A map that omits it cannot decode a
+    # third of the artifact.
+    id_to_name = dict(id_to_name)
+    id_to_name.setdefault(unknown_id, load_ff48_ranges().get("unknown_name", "Unknown"))
+    tables = {
+        "firm_id_map": pd.DataFrame(
+            {"firm_id_int": list(firm_id_map.values()),
+             "firm_id": list(firm_id_map.keys())}).sort_values("firm_id_int"),
+        "account_id_map": pd.DataFrame(
+            {"account_id": list(account_id_map.values()),
+             "account_name": list(account_id_map.keys())}).sort_values("account_id"),
+        "industry_id_map": pd.DataFrame(
+            {"industry_id": sorted(id_to_name),
+             "industry_name": [id_to_name[i] for i in sorted(id_to_name)],
+             "is_reference_level": [i == unknown_id for i in sorted(id_to_name)]}),
+    }
+    written = {}
+    for name, table in tables.items():
+        p = out_dir / f"{name}__{suffix}.csv"
+        table.to_csv(p, index=False)
+        written[name] = p
+    return written
+
+
+def read_id_maps(processed_dir, suffix: str) -> dict[str, pd.DataFrame]:
+    """Read the id maps back with the dtypes that make them usable.
+
+    Use this rather than a bare ``read_csv``: ``firm_id`` is a ZERO-PADDED gvkey
+    string ("001045"), and CSV has no types, so a default read turns it into the
+    integer 1045 -- which then matches nothing in the truth file. The failure is
+    silent, and it is the exact translation these maps exist to provide.
+    """
+    processed_dir = Path(processed_dir)
+    dtypes = {
+        "firm_id_map": {"firm_id": str, "firm_id_int": "int64"},
+        "account_id_map": {"account_name": str, "account_id": "int64"},
+        "industry_id_map": {"industry_name": str, "industry_id": "int64"},
+    }
+    out = {}
+    for name, dtype in dtypes.items():
+        p = processed_dir / f"{name}__{suffix}.csv"
+        if p.exists():
+            out[name] = pd.read_csv(p, dtype=dtype)
+    return out
+
+
 def _year_to_max_q(year: int) -> int:
     return (pd.Period(f"{year}Q4", freq="Q").ordinal - BASE_QUARTER.ordinal)
 
@@ -1140,7 +1201,16 @@ def build(
         log("Building tuple view ...")
         account_cols = [c for c in dict.fromkeys(items + target_items) if c in raw.columns] + \
             (["scale"] if "scale" in raw.columns else [])
-        tup, _fm, _am = build_tuple(raw, account_cols, firm_ind)
+        tup, firm_id_map, account_id_map = build_tuple(raw, account_cols, firm_ind)
+        # The tuple view stores integer ids; the submission schema requires the
+        # gvkey string and the pf_full item NAME. These maps are the only bridge,
+        # so a build that discards them cannot produce a schema-valid submission
+        # from the tuple view at all. They also pin the ordering rule: account and
+        # industry ids are embedding indices, so a build whose ordering differs
+        # from the one a checkpoint was trained under silently permutes them.
+        written.update(write_id_maps(out_dir, suffix, firm_id_map, account_id_map))
+        log(f"  id maps: {len(firm_id_map):,} firms, {len(account_id_map)} accounts, "
+            f"{len(_ff48_flat()[2])} industries")
         tr, va, te = split_tuple(tup, splits["train_end_year"], splits["val_end_year"],
                                  pre_quarters=fe["recent_levels"] + fe["yoy_changes"] - 1)
         for name, part in (("train", tr), ("val", va), ("test", te)):
