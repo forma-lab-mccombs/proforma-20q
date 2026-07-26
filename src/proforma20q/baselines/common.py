@@ -128,8 +128,13 @@ def wide_predictions_to_long(
     """
     blocks = list(wide_prediction_blocks(meta, pred_wide, target_cols))
     if not blocks:
-        return pd.DataFrame(columns=[FIRM_COL, TARGET_COL, ORIGIN_COL,
-                                     HORIZON_COL, PREDICTION_COL])
+        # Empty, but with the dtypes a real forecast has -- an all-object
+        # sentinel would degrade `horizon` to object when concatenated.
+        return pd.DataFrame({FIRM_COL: np.array([], dtype=object),
+                             TARGET_COL: np.array([], dtype=object),
+                             ORIGIN_COL: np.array([], dtype="datetime64[ns]"),
+                             HORIZON_COL: np.array([], dtype=np.int64),
+                             PREDICTION_COL: np.array([], dtype=float)})
     return pd.concat(blocks, ignore_index=True)
 
 
@@ -153,7 +158,16 @@ def load_tabular(path, columns: list[str] | None = None) -> pd.DataFrame:
         stored = set(fastparquet_columns(path))
         inverse = {v: k for k, v in ALIASES.items()}
         columns = [c if c in stored else inverse.get(c, c) for c in columns]
-        columns = [c for c in dict.fromkeys(columns) if c in stored]
+        columns = list(dict.fromkeys(columns))
+        absent = [c for c in columns if c not in stored]
+        if absent:
+            # The driver derives one column list from the test split's schema and
+            # applies it to all three; a train/val split missing a column would
+            # otherwise degrade into a silent partial fit.
+            shown = ", ".join(absent[:8])
+            more = f", ... (+{len(absent) - 8} more)" if len(absent) > 8 else ""
+            raise KeyError(f"{path} is missing {len(absent)} requested column(s): "
+                           f"{shown}{more}")
     return normalize_columns(pd.read_parquet(path, engine=PARQUET_ENGINE,
                                              columns=columns))
 

@@ -465,6 +465,11 @@ def _contiguous_panel(g: pd.DataFrame, qcol: str) -> pd.DataFrame:
     return g
 
 
+# What `_quarter_ordinals` returns for NaT: pandas reports year == quarter == -1
+# for the missing-period sentinel, so the arithmetic below yields -6.
+_NAT_ORDINAL = -6
+
+
 def _quarter_ordinals(values) -> np.ndarray:
     """Calendar-quarter ordinals (``year*4 + quarter - 1``) -- a dense integer
     axis on which a lag of L quarters is a shift of L positions."""
@@ -508,13 +513,28 @@ def prepare_panel(raw_df: pd.DataFrame, items: list[str], *,
     Vectorized equivalent of ``groupby(firm).apply(_contiguous_panel)``: one
     ``np.repeat``-built index instead of 41,595 small frames.
     """
-    present_items = [it for it in items if it in raw_df.columns]
+    present_items = list(dict.fromkeys(it for it in items if it in raw_df.columns))
     if "scale" not in raw_df.columns:
         raise KeyError("prepare_panel requires the 'scale' column (see compute_scale)")
     value_cols = list(dict.fromkeys(present_items + ["scale"]))
 
     codes, uniques = pd.factorize(raw_df[firm_col], sort=True)
+    if (codes < 0).any():
+        # factorize codes a missing key as -1, which then indexes the LAST firm's
+        # block from the end and scatters the row into a different firm's panel.
+        # The old per-firm groupby dropped these rows; silently mixing firms is
+        # not an acceptable substitute.
+        raise ValueError(
+            f"{int((codes < 0).sum())} row(s) have a missing {firm_col}; drop them "
+            "before building")
     qord_raw = _quarter_ordinals(raw_df[qcol])
+    if (qord_raw == _NAT_ORDINAL).any():
+        # NaT's sentinel year/quarter (-1, -1) produces a plausible-looking
+        # ordinal ~8,000 quarters before the data, which inflates that firm's
+        # contiguous range to ~8,100 rows before anything notices.
+        raise ValueError(
+            f"{int((qord_raw == _NAT_ORDINAL).sum())} row(s) have a missing {qcol}; "
+            "drop them before building")
     order = np.lexsort((qord_raw, codes))          # (firm asc, quarter asc)
     codes = codes[order]
     qord_raw = qord_raw[order]
@@ -740,6 +760,14 @@ def _fill_tabular(panel: TabularPanel, reg_stats: pd.DataFrame, target_items: li
         keep &= ~_all_nan_rows(arr, tgt_level_cols)
     if feat_cols.size:
         keep &= ~_all_nan_rows(arr, feat_cols)
+    if not keep.any():
+        # Writing three empty parquets and logging success is the worst outcome
+        # here; the usual causes are a `scale` that is NaN everywhere or frozen
+        # reg-stats whose quarters do not overlap the panel.
+        raise ValueError(
+            f"no rows survive the keep-mask (panel {len(panel):,} rows, "
+            f"{sel.size:,} with a usable scale). Check `scale` and that the "
+            "regularization stats cover this panel's quarters.")
     return arr, names, col_idx, keep, sel
 
 
@@ -794,7 +822,11 @@ def _finish_tabular_block(arr, names, col_idx, firm_ids, qord, quarter, target_i
             # whose last-bit rounding depends on the input's memory layout, and a
             # column-extracted pandas block (what both the research repo and the
             # per-firm builder fed it) is column-major. Keeps imputed cells
-            # bit-identical to those builders.
+            # bit-identical to those builders. Not theoretical: C-ordered input
+            # moved 1,110 imputed `gdwlq` cells (max |delta| 8e-27, values whose
+            # true magnitude is ~0) across 5 quarters of a 250-firm slice of the
+            # real panel -- a degenerate factor problem where any perturbation
+            # flips the result.
             filled = impute_local_xs(
                 pd.DataFrame(np.asfortranarray(block), columns=impute_names),
                 n_factors=n_factors)
@@ -1034,7 +1066,16 @@ def build(
     # on EVERY build, not just at download time.
     import fastparquet  # noqa: PLC0415 - engine is already a hard dependency
     available = list(fastparquet.ParquetFile(str(raw_path)).columns)
-    want = [c for c in required_raw_columns() if c in available]
+    # A panel may already carry the post-rename spellings (a third-party or
+    # re-saved panel); ask for whichever form the file actually has, never both,
+    # since renaming onto an existing column would duplicate it.
+    renames = {"gvkey": "firm_id", "datadate": "quarter", "naicsh": "naics"}
+    wanted_names = []
+    for c in required_raw_columns():
+        wanted_names.append(c)
+        if c in renames and c not in available:
+            wanted_names.append(renames[c])
+    want = [c for c in dict.fromkeys(wanted_names) if c in available]
     log(f"Loading raw panel {raw_path} "
         f"({len(want)} of {len(available)} columns) ...")
     raw = pd.read_parquet(raw_path, engine="fastparquet", columns=want or None)

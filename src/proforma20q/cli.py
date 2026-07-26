@@ -32,6 +32,7 @@ def cmd_download(args) -> int:
     from .download import download
     download(args.wrds_user, out_dir=args.out,
              start_year=args.start_year, end_year=args.end_year,
+             intermediate_dir=args.intermediate_dir,
              chunk_years=args.chunk_years,
              columns=["*"] if args.all_columns else None)
     return 0
@@ -121,15 +122,16 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_validate(args) -> int:
-    from .schema import SubmissionError, read_forecast, validate_forecast
+    from .schema import validate_forecast_file
+    # Streamed by row-group: a full-coverage submission is ~550M rows / ~73 GB
+    # as a frame, so validation cannot start by reading the file.
     try:
-        df = read_forecast(args.forecast, validate=False)
+        problems, n_rows = validate_forecast_file(args.forecast, strict=False)
     except Exception as e:  # noqa: BLE001
         print(f"FAILED to read {args.forecast}: {e}", file=sys.stderr)
         return 2
-    problems = validate_forecast(df, strict=False)
     if not problems:
-        print(f"OK: {args.forecast} conforms to the submission schema ({len(df):,} rows).")
+        print(f"OK: {args.forecast} conforms to the submission schema ({n_rows:,} rows).")
         return 0
     print(f"INVALID: {args.forecast}", file=sys.stderr)
     for p in problems:
@@ -196,9 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="data/raw")
     d.add_argument("--start-year", type=int, default=None)
     d.add_argument("--end-year", type=int, default=None)
+    d.add_argument("--intermediate-dir", default="data",
+                   help="where per-chunk fundq parquets are cached (default: data/)")
     d.add_argument("--chunk-years", type=int, default=1,
                    help="pull comp.fundq in N-year chunks (default 1; 0 = one query). "
-                        "Chunks are cached under <out>/../raw_chunks so an "
+                        "Chunks are cached under <intermediate-dir>/raw_chunks so an "
                         "interrupted pull resumes")
     d.add_argument("--all-columns", action="store_true",
                    help="SELECT f.* instead of the 82-column projection "

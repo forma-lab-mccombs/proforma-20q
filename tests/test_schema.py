@@ -145,3 +145,111 @@ def test_block_writer_overwrites_a_stale_file(tmp_path):
     write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
     write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
     assert len(read_forecast(p, validate=False)) == len(fc)
+
+
+def test_block_writer_allows_one_all_null_block(tmp_path):
+    """A single (target, horizon) with no fittable training rows is legitimately
+    all-NaN -- the linear baselines emit exactly that. Validating each block in
+    isolation must not turn it into an aborted 1,560-block write."""
+    fc = _valid_fc()
+    blocks = _blocks(fc)
+    blocks[1] = blocks[1].assign(prediction=np.nan)
+    p = tmp_path / "fc.parquet"
+    assert write_forecast_blocks(blocks, p) == len(fc)
+    back = read_forecast(p, validate=False)
+    assert back["prediction"].isna().sum() == len(blocks[1])
+    # ... but a submission that is all-null everywhere is still an error
+    with pytest.raises(SubmissionError, match="every prediction"):
+        write_forecast_blocks([b.assign(prediction=np.nan) for b in blocks],
+                              tmp_path / "empty.parquet")
+
+
+def test_block_writer_catches_duplicates_inside_a_block(tmp_path):
+    """Duplicate keys come from a repeated (firm, origin) in the origin frame,
+    which duplicates the key in EVERY block -- so the intra-block scan is the one
+    that matters, and it is cheap."""
+    fc = _valid_fc()
+    blocks = [pd.concat([b, b.iloc[[0]]], ignore_index=True) for b in _blocks(fc)]
+    with pytest.raises(SubmissionError, match="duplicate"):
+        write_forecast_blocks(blocks, tmp_path / "fc.parquet")
+
+
+def test_block_writer_skips_an_empty_block(tmp_path):
+    """A generator that yields nothing for a target with no test rows is the
+    obvious user pattern; it must not abort the write."""
+    fc = _valid_fc()
+    blocks = _blocks(fc)
+    empty = blocks[0].iloc[:0]
+    p = tmp_path / "fc.parquet"
+    assert write_forecast_blocks([blocks[0], empty, *blocks[1:]], p) == len(fc)
+
+
+def test_a_failed_write_leaves_the_previous_submission_intact(tmp_path):
+    """A run that dies at block 1,400 of 1,560 must not leave a well-formed
+    parquet that scores as an intentional partial-coverage entry -- and must not
+    destroy the good file from the previous run."""
+    fc = _valid_fc()
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(_blocks(fc), p)
+    good = read_forecast(p, validate=False)
+
+    def dies_partway():
+        for i, b in enumerate(_blocks(fc)):
+            if i == 2:
+                raise RuntimeError("simulated OOM")
+            yield b
+
+    with pytest.raises(RuntimeError):
+        write_forecast_blocks(dies_partway(), p, rows_per_group=1)
+    pd.testing.assert_frame_equal(read_forecast(p, validate=False), good)
+    assert (tmp_path / "fc.parquet.partial").exists()   # visible, and not a submission
+
+
+def test_block_writer_normalizes_origin_across_blocks(tmp_path):
+    """Mixed origin representations were coerced against the first row-group's
+    schema, so a Period block read back as 1970-era nanoseconds -- silently."""
+    fc = _valid_fc()
+    blocks = _blocks(fc)
+    blocks[1] = blocks[1].assign(
+        origin=pd.PeriodIndex(pd.to_datetime(blocks[1]["origin"]), freq="Q"))
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(blocks, p)
+    back = read_forecast(p, validate=False)
+    assert back["origin"].dt.year.min() >= 2010
+
+
+def test_categorical_keys_do_not_become_the_string_nan(tmp_path):
+    """`astype(str)` on a categorical with a missing value writes the literal
+    'nan', which validates as a real firm id and joins to nothing."""
+    fc = _valid_fc()
+    firm = fc["firm"].astype("category")
+    fc = fc.assign(firm=firm.cat.set_categories(sorted(set(fc["firm"]))[1:]))
+    with pytest.raises(SubmissionError, match="null value"):
+        write_forecast_blocks(_blocks(fc), tmp_path / "fc.parquet")
+
+
+def test_sigma_underflow_in_float32_is_rejected(tmp_path):
+    """A sigma that passes `> 0` on the way in and lands as 0.0 on disk makes the
+    file fail the check it just passed."""
+    fc = _valid_fc().assign(sigma=1e-50)
+    with pytest.raises(SubmissionError, match="underflow"):
+        write_forecast(fc, tmp_path / "fc.parquet")
+
+
+def test_file_validation_streams_by_row_group(tmp_path):
+    """`validate` must not start by loading the file: a full-coverage submission
+    is ~550M rows / ~73 GB as a frame."""
+    from proforma20q.schema import validate_forecast_file
+
+    fc = _valid_fc()
+    p = tmp_path / "fc.parquet"
+    write_forecast_blocks(_blocks(fc), p, rows_per_group=5)
+    problems, n_rows = validate_forecast_file(p)
+    assert problems == [] and n_rows == len(fc)
+
+    bad = tmp_path / "bad.parquet"
+    write_forecast_blocks([b.assign(target="not_an_item") for b in _blocks(fc)],
+                          bad, validate=False, rows_per_group=5)
+    problems, n_rows = validate_forecast_file(bad)
+    assert n_rows == len(fc)
+    assert any("not among the 78 pf_full targets" in p for p in problems)

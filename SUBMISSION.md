@@ -41,17 +41,23 @@ split has **352,106 firm-quarters**, so **full coverage is**
 352,106 origins × 78 targets × 20 horizons = 549,285,360 rows
 ```
 
-≈ **4 GB on disk** (float32 predictions; ~6 GB with `sigma`) and **> 20 GB in
-memory** if you materialize it as one frame — enough to raise
-`ArrayMemoryError` on an ordinary machine. Partial coverage is allowed (missing
+Measured: **3.54 GB on disk** for the point track (float32 predictions; add
+~2 GB if you carry `sigma`), and **~73 GB as a single in-memory frame** — the
+`firm` and `target` string columns cost ~112 of the 132 bytes per row. Building
+it as one frame raises `ArrayMemoryError` well before that on an ordinary
+machine. Partial coverage is allowed (missing
 cells simply drop out of the common sample), so a subset of targets or horizons
 is a legitimate, much smaller entry — but do not plan a full-coverage run around
 a single in-memory frame.
 
 **Write it in blocks.** `proforma20q.schema.write_forecast_blocks` takes any
 iterable of submission-schema frames — typically one per `(target, horizon)` —
-validates each and appends it as a parquet row-group, so peak memory is the
-buffer (a few hundred MB) rather than the submission:
+validates each and appends it as a parquet row-group, so the forecast itself is
+never held in memory; what you pay for is your own model state plus a ~4M-row
+write buffer (a few hundred MB). Measured end to end, the shipped `naive` and
+`fade` baselines write their full 549,285,360-row forecasts at **11.2 GB peak**,
+nearly all of which is the tabular splits they read, not the forecast they
+write:
 
 ```python
 from proforma20q.schema import write_forecast_blocks
@@ -72,8 +78,18 @@ n = write_forecast_blocks(blocks(test_origins, model), "my_forecasts.parquet")
 
 The shipped baselines use exactly this path
 (`proforma20q.baselines.iter_baseline_blocks` → `write_forecast_blocks`).
-`proforma20q validate` reads the finished file and does the full check,
-including the cross-block duplicate-key scan that the streamed writer skips.
+
+Two properties worth knowing:
+
+- **Every block is validated**, duplicate keys included. Rows accumulate in
+  `<name>.parquet.partial` and are renamed into place only when the last block
+  is written, so a run that dies at block 1,400 of 1,560 cannot leave a
+  well-formed parquet that would score as an intentional partial-coverage entry.
+- **`proforma20q validate` streams the finished file row-group by row-group**
+  (it cannot load it — ~550M rows is ~73 GB as a frame, dominated by the `firm`
+  and `target` string columns). It therefore checks every row-group in full but
+  does **not** detect duplicate keys that span two row-groups. A writer that
+  emits one row-group per `(target, horizon)` cannot produce them.
 
 ## Density family (probabilistic track)
 

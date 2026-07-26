@@ -12,6 +12,7 @@ import re
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from proforma20q.download import (attach_permno, coerce_declared_dtypes, download,
                                   fundq_projection)
@@ -119,7 +120,18 @@ class _StubWRDS:
                     if self.null_year is not None and year == self.null_year:
                         r["oancfy"] = None
                     recs.append(r)
-        return pd.DataFrame(recs, columns=cols)
+        return self._as_wrds_dtypes(pd.DataFrame(recs, columns=cols))
+
+    @staticmethod
+    def _as_wrds_dtypes(df):
+        """`wrds.raw_sql` defaults to dtype_backend="numpy_nullable", so text
+        columns arrive as `string[python]`, not `object`. A chunk read back from
+        the parquet cache arrives as `object` -- the mismatch that makes a
+        resumed pull die in merge_asof."""
+        for c in ("gvkey", "tic", "conm", "indfmt", "datafmt", "consol", "popsrc"):
+            if c in df.columns:
+                df[c] = df[c].astype("string")
+        return df
 
     def raw_sql(self, sql):
         self.queries.append(sql)
@@ -130,10 +142,10 @@ class _StubWRDS:
         if "comp.fundq" in sql:
             return self._fundq(sql)
         if "co_industry" in sql:
-            return pd.DataFrame({
+            return self._as_wrds_dtypes(pd.DataFrame({
                 "datadate": pd.to_datetime(["1969-12-31", "1969-12-31"]),
                 "gvkey": ["001000", "001001"],
-                "sich": [3500.0, 2000.0], "naicsh": [334111.0, 311111.0]})
+                "sich": [3500.0, 2000.0], "naicsh": [334111.0, 311111.0]}))
         if "ccmxpf_lnkhist" in sql:
             return pd.DataFrame([
                 _link_row(g, 10000 + i, 20000 + i, "1950-01-01", "2030-01-01")
@@ -179,30 +191,83 @@ def test_download_projects_columns_and_chunks_by_year(tmp_path):
     assert set(panel["gvkey"]) == {"001000", "001001"}
     assert "permno" in panel.columns and panel["permno"].notna().all()
     cached = sorted(p.name for p in (tmp_path / "raw_chunks").glob("*.parquet"))
-    assert cached == ["fundq_1996_1996.parquet", "fundq_1997_1997.parquet",
-                      "fundq_1998_1998.parquet"]
+    assert len(cached) == 3
+    assert [c.split("__")[0] for c in cached] == ["fundq_1996_1996", "fundq_1997_1997",
+                                                  "fundq_1998_1998"]
 
 
 def test_download_reuses_cached_chunks(tmp_path):
     kw = dict(out_dir=tmp_path / "raw", start_year=1996, end_year=1997,
               intermediate_dir=tmp_path)
-    download("tester", connection=_StubWRDS(), **kw)
+    first = download("tester", connection=_StubWRDS(), **kw)
+    fresh = pd.read_parquet(first, engine="fastparquet")
     again = _StubWRDS()
-    download("tester", connection=again, **kw)
+    second = download("tester", connection=again, **kw)
     assert again.fundq_queries() == []        # served entirely from the cache
+    # ... and the resumed panel is the same panel, not just the same row count.
+    pd.testing.assert_frame_equal(pd.read_parquet(second, engine="fastparquet"), fresh)
+
+
+def test_resumed_pull_survives_the_wrds_nullable_string_dtypes(tmp_path):
+    """A cached chunk comes back from parquet as `object`; `co_industry` is
+    always pulled fresh and comes back as `string[python]`. Without normalizing
+    the join key, merge_asof raises -- after the Duo prompt and after re-pulling
+    every uncached year. Resume is the whole point of chunking, so this path
+    must work."""
+    kw = dict(out_dir=tmp_path / "raw", intermediate_dir=tmp_path)
+    download("tester", connection=_StubWRDS(), start_year=1996, end_year=1997, **kw)
+    resumed = _StubWRDS()
+    out = download("tester", connection=resumed, start_year=1996, end_year=1998, **kw)
+    assert len(resumed.fundq_queries()) == 1        # 1996-97 cached, 1998 fresh
+    panel = pd.read_parquet(out, engine="fastparquet")
+    assert len(panel) == 24
+    assert panel["sich"].notna().all()              # the merge actually matched
+
+
+def test_cached_chunk_is_not_reused_under_a_different_projection(tmp_path):
+    """A chunk pulled with another column set is not interchangeable: reusing it
+    by year alone unions two schemas, leaving a column populated for some years
+    and silently NaN for others."""
+    kw = dict(out_dir=tmp_path / "raw", intermediate_dir=tmp_path,
+              start_year=1996, end_year=1997)
+    narrow = ["gvkey", "datadate", "fyearq", "fqtr", "indfmt", "datafmt",
+              "consol", "popsrc", "atq"]
+    download("tester", connection=_StubWRDS(), columns=narrow, **kw)
+    db = _StubWRDS()
+    out = download("tester", connection=db, **kw)          # default 82 columns
+    assert len(db.fundq_queries()) == 2                    # re-pulled, not reused
+    panel = pd.read_parquet(out, engine="fastparquet")
+    assert "ltq" in panel.columns and panel["ltq"].notna().all()
+    assert len(list((tmp_path / "raw_chunks").glob("fundq_1996_1996__*.parquet"))) == 2
 
 
 def test_all_null_year_does_not_stringify_a_numeric_column(tmp_path):
     """The chunking trap: ``oancfy`` is entirely NULL in 1996, so that chunk
     types it as ``object``. Concatenating on chunk dtypes silently makes the
     whole column object (and a later ``astype(str)`` renders 2022 as '2022.0').
-    Dtypes must come from the Postgres declarations."""
+    Dtypes must come from the Postgres declarations -- asserted on the CACHED
+    CHUNK, since a coercion applied only after the concat would pass a check on
+    the final panel alone."""
     db = _StubWRDS(null_year=1996)
+    out = download("tester", out_dir=tmp_path / "raw", start_year=1996, end_year=1998,
+                   intermediate_dir=tmp_path, connection=db)
+    chunk = next((tmp_path / "raw_chunks").glob("fundq_1996_1996__*.parquet"))
+    assert pd.read_parquet(chunk, engine="fastparquet")["oancfy"].dtype == np.float64
+    panel = pd.read_parquet(out, engine="fastparquet")
+    assert panel["oancfy"].dtype == np.float64
+    assert panel.loc[panel["datadate"].dt.year == 1996, "oancfy"].isna().all()
+    assert panel.loc[panel["datadate"].dt.year == 1997, "oancfy"].notna().all()
+
+
+def test_missing_declarations_still_repairs_the_all_null_chunk(tmp_path):
+    """Without information_schema the dtype source is gone but chunking is still
+    on by default -- i.e. exactly the trap, on the default path. Fall back to
+    cross-chunk inference rather than silently doing nothing."""
+    db = _StubWRDS(declare=False, null_year=1996)
     out = download("tester", out_dir=tmp_path / "raw", start_year=1996, end_year=1998,
                    intermediate_dir=tmp_path, connection=db)
     panel = pd.read_parquet(out, engine="fastparquet")
     assert panel["oancfy"].dtype == np.float64
-    assert panel.loc[panel["datadate"].dt.year == 1996, "oancfy"].isna().all()
     assert panel.loc[panel["datadate"].dt.year == 1997, "oancfy"].notna().all()
 
 
@@ -214,6 +279,47 @@ def test_download_survives_missing_declarations(tmp_path):
                    intermediate_dir=tmp_path, connection=db, chunk_years=0)
     assert len(db.fundq_queries()) == 1        # chunk_years=0 -> single query
     assert pd.read_parquet(out, engine="fastparquet").shape[0] == 8
+
+
+def test_projected_column_absent_from_fundq_is_fatal(tmp_path):
+    """Silently dropping a projected column deletes a benchmark feature: a
+    `{base}q` item exists only via its `{base}y` source, so a missing source
+    shrinks the feature set and changes the artifacts' shape, with an md5
+    mismatch as the only signal."""
+    db = _StubWRDS()
+    with pytest.raises(KeyError, match="absent from comp.fundq"):
+        download("tester", out_dir=tmp_path / "raw", start_year=1996, end_year=1996,
+                 intermediate_dir=tmp_path, connection=db,
+                 columns=["gvkey", "datadate", "no_such_column"])
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(start_year=2000, end_year=1990),      # transposed years
+    dict(start_year=1996, end_year=1996, chunk_years=-1),   # infinite loop
+    dict(start_year=1996, end_year=1996, columns=["gvkey", "atq FROM comp.funda; --"]),
+])
+def test_bad_arguments_fail_before_the_connection_is_used(tmp_path, kwargs):
+    """Argument validation must happen before any query: a typo should not cost
+    a Duo round trip, and `chunk_years=-1` used to hang forever after auth."""
+    db = _StubWRDS()
+    with pytest.raises((ValueError, KeyError)):
+        download("tester", out_dir=tmp_path / "raw", intermediate_dir=tmp_path,
+                 connection=db, **kwargs)
+    assert db.queries == []
+
+
+def test_year_chunk_windows():
+    from proforma20q.download import _year_chunks
+
+    assert list(_year_chunks(1996, 1998, 1)) == [(1996, 1996), (1997, 1997), (1998, 1998)]
+    assert list(_year_chunks(1996, 1996, 1)) == [(1996, 1996)]
+    assert list(_year_chunks(1996, 2000, 2)) == [(1996, 1997), (1998, 1999), (2000, 2000)]
+    assert list(_year_chunks(1996, 1998, 99)) == [(1996, 1998)]
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            list(_year_chunks(1996, 1998, bad))
+    with pytest.raises(ValueError):
+        list(_year_chunks(2000, 1990, 1))
 
 
 def test_coerce_declared_dtypes_uses_declarations_not_content():

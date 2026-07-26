@@ -44,6 +44,13 @@ def iter_baseline_blocks(
     of its read can still say what to predict.
     """
     targets = targets or discover_targets(test_df)
+    if not targets:
+        # `discover_targets` needs both `{item}_level_0` and `{item}_t{h}` in the
+        # frame. On a column-projected read the truth columns are gone by design,
+        # so silently yielding nothing is the failure mode to prevent.
+        raise ValueError(
+            "no scoreable targets: pass `targets=` explicitly (and `target_cols=` "
+            "if the frame was read with a column projection)")
     if name == "naive":
         return iter_naive_blocks(test_df, targets=targets, target_cols=target_cols)
     if name == "fade":

@@ -16,6 +16,9 @@ divergence from the published checksums instead of hard-failing.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +27,12 @@ from pandas.tseries.offsets import MonthEnd
 
 from .build import required_raw_columns
 from .config import load_task_config
+
+# Column names are interpolated into the SELECT, so they must be plain SQL
+# identifiers. The list is config-derived, which makes a typo in
+# feature_sets.yaml -- not an attacker -- the realistic way something else
+# arrives here; either way it must not become part of the query.
+_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 
 # Canonical Compustat query filters (configs/task.yaml -> universe).
 _COMPUSTAT_FILTERS = {"indfmt": "INDL", "datafmt": "STD", "consol": "C", "popsrc": "D"}
@@ -48,6 +57,37 @@ def fundq_projection(feature_set: str | None = None) -> list[str]:
                                 prefer_ytd_source=True)
 
 
+def _connect_once(wrds_username: str):
+    """Open a WRDS connection with **exactly one** authentication attempt.
+
+    ``wrds.Connection(...)`` autoconnects, and ``Connection.connect()`` retries:
+    if the first attempt fails it prompts for a username/password and connects a
+    second time. A second attempt means a second Duo push, and repeated attempts
+    without a Duo response deactivate the account -- the one failure mode this
+    package must never cause. So construct with ``autoconnect=False`` and drive
+    the client's single-attempt path directly.
+    """
+    try:
+        import wrds  # noqa: PLC0415
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "the 'wrds' package is required for downloading. Install with "
+            "`pip install proforma-20q[wrds]` and configure ~/.pgpass.") from e
+
+    print(f"Connecting to WRDS as {wrds_username} (single attempt; if this fails, "
+          f"stop and check your credentials -- do NOT re-run in a loop)...")
+    db = wrds.Connection(wrds_username=wrds_username, autoconnect=False)
+    single = getattr(db, "_Connection__make_sa_engine_conn", None)
+    if single is None:  # pragma: no cover - depends on the installed wrds version
+        print("  WARNING: this 'wrds' version exposes no single-attempt connect; "
+              "falling back to Connection.connect(), which may prompt and retry. "
+              "If you are prompted for a password, answer nothing and abort.")
+        db.connect()
+    else:
+        single(raise_err=True)
+    return db
+
+
 def _declared_dtypes(db, table: str = "fundq", schema: str = "comp") -> dict[str, str]:
     """Column -> Postgres declared type for a WRDS table ({} if unavailable)."""
     try:
@@ -58,6 +98,27 @@ def _declared_dtypes(db, table: str = "fundq", schema: str = "comp") -> dict[str
         print(f"  (could not read {schema}.{table} column declarations: {e})")
         return {}
     return dict(zip(decl["column_name"].astype(str), decl["data_type"].astype(str)))
+
+
+def _check_identifiers(names) -> list[str]:
+    bad = [c for c in names if not _IDENTIFIER.match(str(c))]
+    if bad:
+        raise ValueError(
+            f"refusing to build a query from non-identifier column name(s): {bad}. "
+            "Check the feature-set / YTD config.")
+    return list(names)
+
+
+def _plain_str(s: pd.Series) -> pd.Series:
+    """Normalize a key column to plain ``object`` strings.
+
+    ``wrds.raw_sql`` returns ``string[python]`` / ``Float64`` (nullable) dtypes,
+    while a chunk round-tripped through parquet comes back as ``object``. Merging
+    a resumed panel against a freshly-pulled table then dies with
+    ``MergeError: incompatible merge keys``. Normalizing both sides is the
+    difference between resume working and resume costing another Duo prompt.
+    """
+    return s.astype(str).astype(object)
 
 
 def coerce_declared_dtypes(df: pd.DataFrame, declared: dict[str, str]) -> pd.DataFrame:
@@ -72,21 +133,69 @@ def coerce_declared_dtypes(df: pd.DataFrame, declared: dict[str, str]) -> pd.Dat
     """
     if not declared:
         return df
+    lost: dict[str, int] = {}
     for col in df.columns:
         pg = declared.get(col, "").lower()
         if pg in _PG_NUMERIC and df[col].dtype != np.float64:
+            before = df[col].notna().sum()
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
         elif pg in _PG_DATE and not pd.api.types.is_datetime64_any_dtype(df[col]):
+            before = df[col].notna().sum()
             df[col] = pd.to_datetime(df[col], errors="coerce")
+        else:
+            continue
+        dropped = int(before - df[col].notna().sum())
+        if dropped:
+            lost[col] = dropped
+    if lost:
+        # `errors="coerce"` turns anything unparseable into NaN. Postgres should
+        # never hand back such a value, so a non-zero count means the input was
+        # not what its declaration says -- report it rather than absorb it.
+        print(f"  WARNING: coercion nulled values that were present: {lost}")
     return df
 
 
+def _fallback_numeric_coercion(chunks: list[pd.DataFrame]) -> None:
+    """Dtype repair for when the Postgres declarations are unavailable.
+
+    Same trap, weaker evidence: a column that is numeric in ANY chunk is numeric,
+    so an all-NULL year that arrived as ``object`` gets coerced instead of
+    poisoning the concatenated column. In place, before the concat.
+    """
+    numeric: set[str] = set()
+    for part in chunks:
+        numeric |= {c for c in part.columns
+                    if pd.api.types.is_numeric_dtype(part[c])}
+    for part in chunks:
+        for col in numeric:
+            if col in part.columns and not pd.api.types.is_numeric_dtype(part[col]):
+                part[col] = pd.to_numeric(part[col], errors="coerce")
+
+
 def _year_chunks(start_year: int, end_year: int, chunk_years: int):
+    if chunk_years < 1:
+        # `hi = y + chunk_years - 1 < y` makes `y = hi + 1` go backwards and the
+        # loop never terminates -- after authenticating.
+        raise ValueError(f"chunk_years must be >= 1, got {chunk_years}")
+    if start_year > end_year:
+        raise ValueError(f"start_year {start_year} is after end_year {end_year}")
     y = start_year
     while y <= end_year:
         hi = min(y + chunk_years - 1, end_year)
         yield y, hi
         y = hi + 1
+
+
+def _chunk_cache_name(lo: int, hi: int, wanted, filters: dict) -> str:
+    """Cache filename keyed on the projection as well as the years.
+
+    A chunk pulled under a different projection (or ``--all-columns``) is not
+    interchangeable with this one: reusing it by year alone silently unions two
+    schemas, leaving a column populated for some years and NaN for others.
+    """
+    sig = json.dumps({"cols": sorted(map(str, wanted)), "filters": filters},
+                     sort_keys=True)
+    return f"fundq_{lo}_{hi}__{hashlib.md5(sig.encode()).hexdigest()[:8]}.parquet"
 
 
 def download(
@@ -105,8 +214,13 @@ def download(
     Args:
         wrds_username: WRDS username. The password is read from ``~/.pgpass`` (or
             ``%APPDATA%\\postgresql\\pgpass.conf`` on Windows), never passed here.
-            WRDS also enforces Duo 2FA; **never retry authentication in a loop**
-            -- repeated attempts without a Duo response deactivate the account.
+            WRDS also enforces Duo 2FA, and repeated authentication attempts
+            without a Duo response **deactivate the account**. This function
+            makes exactly one connection attempt and never retries: the ``wrds``
+            client's own ``Connection.connect()`` falls back to prompting for
+            credentials and connecting a *second* time, which is precisely the
+            hazard, so the single-attempt entry point is used instead. If it
+            fails, stop and ask a human -- do not re-run in a loop.
         out_dir: directory for the final ``compustat_with_permno.parquet``.
         start_year / end_year: calendar download window (defaults from
             ``task.yaml``: 1970-2024).
@@ -117,11 +231,14 @@ def download(
             None one is opened and closed here. One connection is opened per
             call and reused for every chunk.
         chunk_years: pull ``comp.fundq`` in windows of this many calendar years
-            (default 1). Chunking is provably equivalent to the one-shot pull --
-            ``co_industry`` and the CCM link table are fetched in full either way
-            and every downstream step runs on the concatenated panel -- and it
-            keeps peak memory flat over the 55-year window. Pass ``None`` or 0
-            for a single query.
+            (default 1). Chunking yields the same row *set* as the one-shot pull
+            -- ``co_industry`` and the CCM link table are fetched in full either
+            way and every downstream step runs on the concatenated panel -- and
+            it makes an interrupted pull resumable, which matters for a ~1 hour
+            job behind a 2FA prompt. It does NOT reduce peak memory: the chunks
+            are concatenated in memory, so the peak is ~2x the assembled panel
+            (the 7.9x saving comes from the column projection, not from
+            chunking). Pass ``None`` or 0 for a single query.
         columns: explicit ``comp.fundq`` projection; defaults to
             :func:`fundq_projection` (the 82 columns the benchmark consumes).
             Pass ``["*"]`` for the old ``SELECT f.*`` behaviour (~100 GB peak
@@ -136,6 +253,17 @@ def download(
     end_year = end_year or uni["end_year"]
     start_date, end_date = f"{start_year}-01-01", f"{end_year}-12-31"
 
+    # Everything that can be checked without the database is checked before the
+    # database is touched: a bad argument must not cost a Duo prompt.
+    if start_year > end_year:
+        raise ValueError(f"start_year {start_year} is after end_year {end_year}")
+    wanted = list(columns) if columns else fundq_projection(
+        task["benchmark"]["feature_set"])
+    if wanted != ["*"]:
+        _check_identifiers(wanted)
+    windows = list(_year_chunks(start_year, end_year, chunk_years)) \
+        if chunk_years else [(start_year, end_year)]
+
     out_dir = Path(out_dir)
     intermediate_dir = Path(intermediate_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -145,41 +273,42 @@ def download(
     db = connection
     close_db = False
     if db is None:
-        try:
-            import wrds  # noqa: PLC0415
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "the 'wrds' package is required for downloading. Install with "
-                "`pip install proforma-20q[wrds]` and configure ~/.pgpass.") from e
-        print(f"Connecting to WRDS as {wrds_username}...")
-        db = wrds.Connection(wrds_username=wrds_username)
+        db = _connect_once(wrds_username)
         close_db = True
 
     try:
         f = _COMPUSTAT_FILTERS
         # -- Compustat quarterly fundamentals --
-        wanted = list(columns) if columns else fundq_projection(
-            task["benchmark"]["feature_set"])
         declared = _declared_dtypes(db)
+        if not declared:
+            print("  WARNING: comp.fundq column declarations unavailable, so chunk "
+                  "dtypes cannot be taken from them. Falling back to cross-chunk "
+                  "inference; verify numeric columns in the written panel.")
         if declared and wanted != ["*"]:
             missing = [c for c in wanted if c not in declared]
             if missing:
-                print(f"  note: {len(missing)} projected column(s) absent from "
-                      f"comp.fundq, skipping: {', '.join(missing)}")
-                wanted = [c for c in wanted if c in declared]
+                # Dropping a projected column silently deletes a benchmark
+                # feature: `{base}q` items exist only via their `{base}y` source,
+                # so a missing source removes the item from the feature set and
+                # changes the artifacts' shape. That is a config/schema bug.
+                raise KeyError(
+                    f"{len(missing)} projected column(s) absent from comp.fundq: "
+                    f"{', '.join(missing)}. Fix the feature-set config, or pass "
+                    "an explicit `columns=` list if this is intentional.")
         proj = "f.*" if wanted == ["*"] else ", ".join(f"f.{c}" for c in wanted)
         print(f"Downloading Compustat quarterly ({start_date}..{end_date}); "
               f"{'all' if wanted == ['*'] else len(wanted)} columns"
               + (f", {chunk_years}-year chunks" if chunk_years else ""))
 
-        windows = list(_year_chunks(start_year, end_year, chunk_years)) \
-            if chunk_years else [(start_year, end_year)]
         chunks = []
         for lo, hi in windows:
-            cache = chunk_dir / f"fundq_{lo}_{hi}.parquet"
+            cache = chunk_dir / _chunk_cache_name(lo, hi, wanted, f)
             if cache.exists():
-                print(f"  {lo}-{hi}: reusing {cache.name}")
-                chunks.append(pd.read_parquet(cache, engine="fastparquet"))
+                cached = pd.read_parquet(cache, engine="fastparquet")
+                age = pd.Timestamp.fromtimestamp(cache.stat().st_mtime)
+                print(f"  {lo}-{hi}: reusing {cache.name} "
+                      f"(pulled {age:%Y-%m-%d}, {len(cached):,} rows)")
+                chunks.append(cached)
                 continue
             part = db.raw_sql(f"""
                 SELECT {proj}
@@ -200,6 +329,12 @@ def download(
                 tmp.replace(cache)
             print(f"  {lo}-{hi}: {len(part):,} rows")
             chunks.append(part)
+        if not declared:
+            _fallback_numeric_coercion(chunks)
+        if not any(len(c.columns) for c in chunks):
+            raise ValueError(
+                f"comp.fundq returned no columns for {start_date}..{end_date} "
+                "-- check the year range and the query filters")
         compustat_df = chunks[0] if len(chunks) == 1 else \
             pd.concat(chunks, ignore_index=True)
         del chunks
@@ -218,9 +353,19 @@ def download(
         """)
         compustat_df["datadate"] = pd.to_datetime(compustat_df["datadate"])
         naics_sic_df["datadate"] = pd.to_datetime(naics_sic_df["datadate"])
+        # `raw_sql` hands back nullable `string[python]` keys; a chunk read back
+        # from the cache hands back `object`. Mismatched join-key dtypes make
+        # merge_asof raise, so a resumed pull would die here -- after the auth
+        # and after re-pulling every uncached year.
+        compustat_df["gvkey"] = _plain_str(compustat_df["gvkey"])
+        naics_sic_df["gvkey"] = _plain_str(naics_sic_df["gvkey"])
+        # Stable sort: the tie order of same-datadate rows differs between a
+        # chunked and a one-shot pull, and it decides which of a duplicate
+        # firm-quarter pair survives `convert_ytd_to_quarterly`'s de-duplication
+        # (the 2-row difference measured in the audit's F26).
         compustat_df = pd.merge_asof(
-            compustat_df.sort_values(["datadate"]),
-            naics_sic_df.sort_values(["datadate"]),
+            compustat_df.sort_values(["datadate"], kind="stable"),
+            naics_sic_df.sort_values(["datadate"], kind="stable"),
             by="gvkey", on="datadate", direction="backward",
         )
 

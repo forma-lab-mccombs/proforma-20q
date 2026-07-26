@@ -272,6 +272,61 @@ def test_prepare_panel_rejects_duplicate_firm_quarter():
         prepare_panel(dup, items)
 
 
+def test_prepare_panel_rejects_missing_keys():
+    """A null key is the one input that corrupts silently: `pd.factorize` codes
+    it -1, which indexes the LAST firm's block from the end and scatters the row
+    into another firm's panel; a NaT quarter maps to a sentinel ordinal ~8,000
+    quarters before the data and inflates that firm's contiguous range. The old
+    per-firm groupby/reindex dropped both. Refusing is the substitute."""
+    from proforma20q.build import prepare_panel
+
+    raw, items, _t, _fi, _task = _prepped_synthetic()
+
+    no_firm = raw.copy()
+    no_firm.loc[no_firm.index[0], "firm_id"] = None
+    with pytest.raises(ValueError, match="missing firm_id"):
+        prepare_panel(no_firm, items)
+
+    no_quarter = raw.copy()
+    no_quarter.loc[no_quarter.index[0], "quarter"] = pd.NaT
+    with pytest.raises(ValueError, match="missing quarter"):
+        prepare_panel(no_quarter, items)
+
+
+def test_prepare_panel_tolerates_a_repeated_item():
+    """`items` with a duplicate used to emit each block twice, with only the
+    second copy written -- the first stayed all-NaN."""
+    from proforma20q.build import prepare_panel
+
+    raw, items, _t, _fi, _task = _prepped_synthetic()
+    panel = prepare_panel(raw, ["niq", "revtq", "niq"])
+    assert panel.items == ["niq", "revtq"]
+
+
+def test_build_reads_a_panel_that_already_uses_the_renamed_keys(tmp_path):
+    """`build --raw <panel>` accepts any Compustat-shaped parquet, including one
+    already carrying firm_id/quarter instead of gvkey/datadate. The column
+    projection must ask for whichever spelling the file has."""
+    raw = synthetic_raw(n_firms=8).rename(
+        columns={"gvkey": "firm_id", "datadate": "quarter", "naicsh": "naics"})
+    p = tmp_path / "renamed.parquet"
+    raw.to_parquet(p, engine="fastparquet", index=False)
+    out = build(p, tmp_path / "proc", dataset_tag="rn", which=("tabular",), verbose=False)
+    assert len(load_tabular(out["tabular_test"])) > 0
+
+
+def test_build_refuses_to_write_an_empty_build(tmp_path):
+    """A panel where nothing survives the keep-mask must fail loudly, not write
+    three empty parquets and report success."""
+    raw = synthetic_raw(n_firms=8)
+    for col in ("atq", "ltq", "seqq"):
+        raw[col] = np.nan          # no usable scale anywhere
+    p = tmp_path / "noscale.parquet"
+    raw.to_parquet(p, engine="fastparquet", index=False)
+    with pytest.raises(ValueError, match="keep-mask"):
+        build(p, tmp_path / "proc", dataset_tag="empty", which=("tabular",), verbose=False)
+
+
 def test_computed_features_overwrite_native_columns():
     """wcapq/gpq/dvcq ship natively in comp.fundq but the benchmark DEFINES them
     via formula; the builder must overwrite the native column (matching the
