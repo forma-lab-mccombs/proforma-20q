@@ -330,6 +330,12 @@ def test_coerce_declared_dtypes_uses_declarations_not_content():
             "datadate": "date"}
     out = coerce_declared_dtypes(df.copy(), decl)
     assert out["oancfy"].dtype == np.float64
-    assert out["gvkey"].dtype == object
     assert pd.api.types.is_datetime64_any_dtype(out["datadate"])
-    assert coerce_declared_dtypes(df.copy(), {})["oancfy"].dtype == object
+    # A declared-varchar column is left alone. Asserted as "still text, values
+    # intact" rather than "dtype is object": pandas 3 infers a string column as
+    # StringDtype, and which one pandas picked is not what this function decides.
+    assert not pd.api.types.is_numeric_dtype(out["gvkey"])
+    assert not pd.api.types.is_datetime64_any_dtype(out["gvkey"])
+    assert list(out["gvkey"]) == ["001000", "001001"]
+    # no declarations -> nothing is coerced, so the all-NULL column stays as it was
+    assert coerce_declared_dtypes(df.copy(), {})["oancfy"].dtype == df["oancfy"].dtype

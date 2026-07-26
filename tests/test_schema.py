@@ -106,7 +106,12 @@ def test_submission_md_minimal_example_round_trips(tmp_path):
         "prediction": [0.42, 0.55, -1.13],
         "sigma":      [0.8, 0.9, 0.7],
     })
-    assert fc["origin"].dtype == "datetime64[s]"     # the input that broke it
+    # The input that broke it: a datetime resolution COARSER than nanoseconds.
+    # Which one pandas picks for `pd.Timestamp("2011-12-31")` is version-
+    # dependent (`[s]` on pandas 2.2, `[us]` on pandas 3) -- the bug is the
+    # non-ns unit, not any particular one, so pin that.
+    assert fc["origin"].dtype.kind == "M"
+    assert np.datetime_data(fc["origin"].dtype)[0] != "ns"
     p = tmp_path / "my_forecasts.parquet"
     write_forecast(fc, p)
 
