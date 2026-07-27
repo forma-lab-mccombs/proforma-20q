@@ -497,6 +497,13 @@ It holds only **model outputs — no firm-level values**. This release covers th
 **point track (Panels A and B)**; the density track (Panel C — exact mixture
 NLL/CRPS) needs the five per-seed forecasts and is out of scope here.
 
+### Documentation
+
+| artifact | what it is |
+|---|---|
+| [`docs/release_documentation.pdf`](docs/release_documentation.pdf) | Detailed technical documentation in three parts: **A** the data pipeline (sample formation, splits, regularization, the 78-item universe, availability, and the accounting identities), **B** model training/implementation detail and every competitor's exact specification, **C** the LLM benchmark protocol with the prompts reproduced in full. |
+| [`docs/prompts/`](docs/prompts/) | The byte-exact system prompts for both elicitation arms, with published SHA-256 anchors ([`docs/README.md`](docs/README.md)). Part C's typeset copies are ASCII transliterations; these files are the originals. |
+
 ---
 
 ## Task definition = single source of truth

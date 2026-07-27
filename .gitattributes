@@ -1,6 +1,11 @@
 # Normalize all text to LF in the repo (clean for Linux CI and anonymized mirrors).
 * text=auto eol=lf
 
-# Binary artifacts (the synthetic example forecasts; the in-repo Full-sample mask).
+# Binary artifacts (the synthetic example forecasts; the in-repo Full-sample mask;
+# the release documentation PDF). Declaring these is not belt-and-braces: with
+# `* text=auto` above, a PDF is spared normalization only because Git's sniff
+# finds a NUL in the first 8 KB. A rebuild whose leading bytes happen to be
+# NUL-free would be CRLF-mangled at check-in, corrupting it with no CI signal.
 *.parquet binary
 *.npy binary
+*.pdf binary
