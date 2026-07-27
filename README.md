@@ -438,7 +438,7 @@ proforma20q evaluate my_forecasts.parquet --against baselines \
 ```
 
 That conversion needs only the bit array and the canonical `tabular_test` — not
-the Forma forecast, which is deferred to publication. `evaluate` names this path
+the Forma forecast, which is deposited at paper submission. `evaluate` names this path
 in its error message if you hand it a bit array that does not fit your grid. Because the reference model's coverage is
 the binding constraint, the Full mask is exactly *its finite-prediction cells ∩
 truth*; `scripts/build_full_sample_mask.py` also rebuilds and verifies it
@@ -481,21 +481,27 @@ bitmap, no firm-level values:
 |---|---|---|---|
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
 
-One further artifact is **not yet available** and is deferred to publication:
+The remaining artifacts are deposited to an archival record (Zenodo) **at
+paper submission**. Exhibit labels below refer to the paper's Table 1
+(Panel A = squared-error track, Panel B = absolute-error track):
 
-> **⚠ Not yet available (placeholder).** The Forma ensemble forecast below is
-> published to an archival record (DOI assigned **on publication**); no record
-> exists yet. Until then `scripts/download_artifacts.py` is a placeholder that
-> **will not run** (its `ZENODO_RECORD` is unset and the script errors out). The
-> md5 is final, so it goes live the moment the record id is filled in.
+> **⚠ Not yet available (placeholder).** No record exists yet. Until then
+> `scripts/download_artifacts.py` is a placeholder that **will not run** (its
+> `ZENODO_RECORD` is unset and the script errors out). The md5s are final, so
+> it goes live the moment the record id is filled in.
 
 | artifact | size | md5 | for |
 |---|---|---|---|
-| `forma_fgrid__pf_full__test__predictions.parquet` | ~4.2 GB | `c4f0f721…` | canonical R13 **Forma** 5-seed mixture forecast (point track). Pool your model against it to reproduce **Panels A / B**, or rebuild the mask from it. |
+| `forma_fgrid__pf_full__test__predictions.parquet` | 3.7 GB | `1820fcc9…` | canonical R13 **Forma** 5-seed Gaussian mixture (squared-error track). Pool your model against it to reproduce the **Panel A** Full column, or rebuild the mask from it. |
+| `ffnn_linear_b50__pf_full__test__predictions.parquet` | 4.4 GB | `e419c833…` | **FFNN (linear)** 5-seed mixture — Panel A comparator row. |
+| `ffnn_large_b50__pf_full__test__predictions.parquet` | 4.5 GB | `915779a3…` | **FFNN (large)** 5-seed mixture — Panel A comparator row. |
+| `forma_lap05_fgrid__pf_full__test__predictions.parquet` | 7.4 GB | `1e8b0415…` | canonical R13 **Forma** Laplace mixture (absolute-error track) — the **Panel B** Full column. |
+| `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
 
-It holds only **model outputs — no firm-level values**. This release covers the
-**point track (Panels A and B)**; the density track (Panel C — exact mixture
-NLL/CRPS) needs the five per-seed forecasts and is out of scope here.
+They hold only **model outputs — no firm-level values**. This release covers
+the **point track (Panels A and B)**; the density track (Panel C — exact
+mixture NLL/CRPS) needs the five per-seed forecasts and is out of scope here
+([#3](https://github.com/ANONYMIZED/proforma-20q/issues/3) tracks it).
 
 ### Documentation
 

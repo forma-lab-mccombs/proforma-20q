@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 
 import hashlib
+import re
 
 import numpy as np
 import pandas as pd
@@ -148,8 +149,41 @@ def test_download_artifacts_md5_guard_and_pins(tmp_path):
     p = tmp_path / "x.bin"
     p.write_bytes(b"proforma-20q")
     assert dl.md5sum(p) == hashlib.md5(b"proforma-20q").hexdigest()
-    # artifact md5s are pinned (only the Zenodo record id is a placeholder)
-    assert all(not v.startswith("REPLACE_WITH") for v in dl.ARTIFACTS.values())
+    # every pin is a full 32-hex md5 -- catches placeholders AND the
+    # transcription bug class (an ellipsized or truncated paste)
+    assert all(re.fullmatch(r"[0-9a-f]{32}", v) for v in dl.ARTIFACTS.values())
     # the release-placeholder guard fires until ZENODO_RECORD is set
     with pytest.raises(SystemExit):
         dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
+
+
+def test_download_artifacts_only_cannot_drop_the_sidecar():
+    """A density forecast without its {stem}.nll.json is silently scored as
+    Gaussian, so --only must pull the sidecar along with its parquet."""
+    dl = _load_script("download_artifacts.py")
+    lap = "forma_lap05_fgrid__pf_full__test__predictions.parquet"
+    side = "forma_lap05_fgrid__pf_full__test__predictions.nll.json"
+    assert dl._with_sidecars([lap]) == [lap, side]
+    assert dl._with_sidecars([lap, side]) == [lap, side]  # no duplicate
+    assert dl._with_sidecars(["full_sample_mask_bits.npy"]) == ["full_sample_mask_bits.npy"]
+    # the full-manifest default keeps every pinned artifact exactly once
+    assert sorted(dl._with_sidecars(dl.ARTIFACTS)) == sorted(dl.ARTIFACTS)
+
+
+def test_readme_artifact_digests_match_script_pins():
+    """The README artifact tables duplicate 8-hex digest prefixes by hand; a
+    hand copy is exactly how the superseded run-1 pin went stale (gh#15).
+    Update policy: change scripts/download_artifacts.py first, then make the
+    README rows agree -- this test fails on any drift between the two."""
+    dl = _load_script("download_artifacts.py")
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    rows = re.findall(r"\|\s*\[?`([A-Za-z0-9_./]+)`\]?[^|]*\|[^|]*\|\s*`([0-9a-f]{8})…`", readme)
+    prefixes: dict[str, str] = {}
+    for path, pref in rows:
+        name = path.rsplit("/", 1)[-1]
+        assert prefixes.get(name, pref) == pref, f"README lists {name} with conflicting digests"
+        prefixes[name] = pref
+    for name, md5 in dl.ARTIFACTS.items():
+        assert name in prefixes, f"{name} is pinned in download_artifacts.py but absent from the README tables"
+        assert md5.startswith(prefixes[name]), \
+            f"README digest `{prefixes[name]}…` for {name} does not match the pinned md5 {md5}"
