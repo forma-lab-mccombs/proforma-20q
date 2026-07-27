@@ -9,8 +9,8 @@
     =======================================================================
 
 Nothing WRDS-derived is released. The public artifacts are model OUTPUTS and a
-coverage mask (no firm-level Compustat values), one file per point-track
-exhibit of Table 1:
+coverage mask (no firm-level Compustat values) -- one file per point-track
+exhibit of Table 1, plus the density-family sidecar and the mask:
 
 * ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13
   Forma 5-seed Gaussian mixture forecast (squared-error track). Pool your
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import urllib.request
 from pathlib import Path
 
@@ -83,14 +84,35 @@ def fetch(name: str, out_dir: Path) -> Path:
         print(f"[ok] {name}: already present and verified")
         return dest
     url = f"https://zenodo.org/records/{ZENODO_RECORD}/files/{name}?download=1"
+    # Stage under a .part name and rename only after the md5 passes, so an
+    # interrupted or corrupt transfer can never leave a plausible-looking
+    # artifact at the real filename.
+    part = dest.with_suffix(dest.suffix + ".part")
     print(f"downloading {name} from {url}")
-    urllib.request.urlretrieve(url, dest, reporthook=_progress)  # streams to disk
+    urllib.request.urlretrieve(url, part, reporthook=_progress)  # streams to disk
     print()
-    got = md5sum(dest)
+    got = md5sum(part)
     if got != expected:
-        raise SystemExit(f"md5 mismatch for {name}: got {got}, expected {expected}")
+        raise SystemExit(f"md5 mismatch for {name}: got {got}, expected {expected} "
+                         f"(unverified download left at {part})")
+    os.replace(part, dest)
     print(f"[ok] {name}: verified ({expected})")
     return dest
+
+
+def _with_sidecars(names) -> list[str]:
+    """Append each selected parquet's ``{stem}.nll.json`` family sidecar.
+
+    The evaluator resolves the density family from the sidecar and silently
+    defaults to Gaussian when it is missing, so ``--only <panel B parquet>``
+    must not be able to fetch the forecast without it.
+    """
+    selected = list(names)
+    for name in list(selected):
+        side = name.removesuffix(".parquet") + ".nll.json"
+        if name.endswith(".parquet") and side in ARTIFACTS and side not in selected:
+            selected.append(side)
+    return selected
 
 
 def main(argv=None) -> int:
@@ -107,7 +129,7 @@ def main(argv=None) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    for name in (args.only or list(ARTIFACTS)):
+    for name in _with_sidecars(args.only or ARTIFACTS):
         fetch(name, out)
     return 0
 

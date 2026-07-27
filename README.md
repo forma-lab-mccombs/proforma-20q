@@ -438,7 +438,7 @@ proforma20q evaluate my_forecasts.parquet --against baselines \
 ```
 
 That conversion needs only the bit array and the canonical `tabular_test` — not
-the Forma forecast, which is deferred to publication. `evaluate` names this path
+the Forma forecast, which is deposited at paper submission. `evaluate` names this path
 in its error message if you hand it a bit array that does not fit your grid. Because the reference model's coverage is
 the binding constraint, the Full mask is exactly *its finite-prediction cells ∩
 truth*; `scripts/build_full_sample_mask.py` also rebuilds and verifies it
@@ -482,7 +482,8 @@ bitmap, no firm-level values:
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
 
 The remaining artifacts are deposited to an archival record (Zenodo) **at
-paper submission**:
+paper submission**. Exhibit labels below refer to the paper's Table 1
+(Panel A = squared-error track, Panel B = absolute-error track):
 
 > **⚠ Not yet available (placeholder).** No record exists yet. Until then
 > `scripts/download_artifacts.py` is a placeholder that **will not run** (its
