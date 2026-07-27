@@ -1,23 +1,36 @@
 """Download + md5-verify the released ProForma-20Q data artifacts from Zenodo.
 
     ============================ NOT YET ACTIVE ============================
-    PLACEHOLDER. The artifacts are published to an archival record (Zenodo)
-    only on paper publication. Until then no record exists, ``ZENODO_RECORD``
+    PLACEHOLDER. The artifacts are deposited to an archival record (Zenodo)
+    at paper submission. Until then no record exists, ``ZENODO_RECORD``
     below is an UNFILLED placeholder, and this script intentionally refuses to
     run -- there is nothing to download yet. The md5s ARE final, so this script
-    becomes live the moment the record id is filled in at release.
+    becomes live the moment the record id is filled in.
     =======================================================================
 
 Nothing WRDS-derived is released. The public artifacts are model OUTPUTS and a
-coverage mask (no firm-level Compustat values):
+coverage mask (no firm-level Compustat values), one file per point-track
+exhibit of Table 1:
 
-* ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13 Forma
-  5-seed mixture forecast (point track). Pool your model against it to reproduce
-  the paper's Panel A / B Full column, or rebuild the pooled mask from it with
-  ``scripts/build_full_sample_mask.py``.
+* ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13
+  Forma 5-seed Gaussian mixture forecast (squared-error track). Pool your
+  model against it to reproduce the paper's Panel A Full column, or rebuild
+  the pooled mask from it with ``scripts/build_full_sample_mask.py``.
+* ``ffnn_linear_b50__pf_full__test__predictions.parquet`` and
+  ``ffnn_large_b50__pf_full__test__predictions.parquet`` -- the two FFNN
+  5-seed mixture forecasts (the Panel A comparator rows).
+* ``forma_lap05_fgrid__pf_full__test__predictions.parquet`` -- the canonical
+  R13 Forma Laplace mixture (absolute-error track; the Panel B Full column),
+  plus its ``forma_lap05_fgrid__pf_full__test__predictions.nll.json`` family
+  sidecar. KEEP THE SIDECAR NEXT TO THE PARQUET: the evaluator resolves the
+  density family from ``{stem}.nll.json`` and silently defaults to Gaussian
+  when it is missing.
 * ``full_sample_mask_bits.npy`` -- the 327,244,429-cell Full-sample mask
   (grid-aligned packbits; no firm identifiers). Pass to
   ``proforma20q evaluate --sample-mask``.
+
+The density track (Panel C -- exact mixture NLL/CRPS over the per-seed
+forecasts) is out of scope for this release; issue #3 tracks it.
 
 Set ``ZENODO_RECORD`` below to the published Zenodo record id (see the DOI on the
 repo's release / README), then::
@@ -33,12 +46,18 @@ import urllib.request
 from pathlib import Path
 
 # The Zenodo record id of the published artifact bundle (the number in the DOI
-# 10.5281/zenodo.<ZENODO_RECORD>). Filled in at release time.
+# 10.5281/zenodo.<ZENODO_RECORD>). Filled in at deposit time (paper submission).
 ZENODO_RECORD = "REPLACE_WITH_ZENODO_RECORD_ID"
 
-# filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json)
+# filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json).
+# Digests verified 2026-07-27 directly over the canonical store, whose
+# MANIFEST.tsv records the same values.
 ARTIFACTS: dict[str, str] = {
-    "forma_fgrid__pf_full__test__predictions.parquet": "c4f0f721409bdfe32c215ddc72c430da",
+    "forma_fgrid__pf_full__test__predictions.parquet": "1820fcc90e71989af558f9d103d6fc31",
+    "ffnn_linear_b50__pf_full__test__predictions.parquet": "e419c8330ff6c9c6396a7d2e04f05c3e",
+    "ffnn_large_b50__pf_full__test__predictions.parquet": "915779a3ff79b6e344d45910ac5e4026",
+    "forma_lap05_fgrid__pf_full__test__predictions.parquet": "1e8b0415905eeac7cf46b052f5c1cbf5",
+    "forma_lap05_fgrid__pf_full__test__predictions.nll.json": "a3d8659a201a2081dd693a8f0de051c3",
     "full_sample_mask_bits.npy": "a36008d8dbfeb56992f1049fd543d781",
 }
 
