@@ -419,30 +419,53 @@ your vintage**:
 
 | form | matches by | survives vintage drift? |
 |---|---|---|
-| grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no firm identifiers) | **position** | **no** — it is a bitmap over an exact 352,962-row set, so a rebuild that gains or loses one test row cannot use it |
-| keys table (`firm, target, origin, horizon`) | **value** | **yes** — it intersects with whatever rows your build has |
+| grid-aligned bit array (`.npy`, `np.packbits` of the canonical cell order — no firm identifiers) | **position** | **not alone** — it is a bitmap over an exact 352,962-row set; pair it with the canonical row index below |
+| bit array **+ `--grid-rows`** (the published row index) | **value** | **yes** — the bitmap is realigned onto your grid by `(firm, origin)` |
+| keys table (`firm, target, origin, horizon`) | **value** | **yes** — but building it needs the canonical `tabular_test`, which is not published |
 
 **The prebuilt grid-aligned mask ships in this repository** at
 [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy)
 (~66 MB; md5 `a36008d8…`, pinned in
 [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
 so the command above needs no download — *if* your `tabular_test` is
-row-identical to the canonical one. Since the README says elsewhere that it will
-not be, convert it once to the portable form against the canonical build:
+row-identical to the canonical one. It will not be: Compustat is revised, so a
+fresh pull drifts. **Pass the published canonical row index alongside it and the
+bitmap works anyway:**
 
 ```bash
-python scripts/build_full_sample_mask.py --from-bits artifacts/full_sample_mask_bits.npy \
-    --truth <canonical tabular_test>.parquet --out artifacts --expect 327244429
+python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # 0.8 MB
 proforma20q evaluate my_forecasts.parquet --against baselines \
-    --sample-mask artifacts/full_sample_mask_keys.parquet
+    --sample-mask artifacts/full_sample_mask_bits.npy \
+    --grid-rows data/artifacts/full_sample_grid_rows.parquet
 ```
 
-That conversion needs only the bit array and the canonical `tabular_test` — not
-the Forma forecast, which is deposited at paper submission. `evaluate` names this path
-in its error message if you hand it a bit array that does not fit your grid. Because the reference model's coverage is
-the binding constraint, the Full mask is exactly *its finite-prediction cells ∩
-truth*; `scripts/build_full_sample_mask.py` also rebuilds and verifies it
-(`--expect 327244429`) offline from the Forma forecast, reproducing the same md5.
+`--grid-rows` names which `(firm, origin)` row each bit belongs to, so `evaluate`
+translates the mask onto *your* grid by value and scores the paper's cells minus
+the rows your vintage lacks — reporting exactly how many that is. **This is the
+route that keeps "score me on Forma's cells" a 67 MB proposition rather than a
+3.7 GB one**: you never need the Forma forecast to define the sample.
+
+The index cannot be derived from the published forecast, which is why it ships:
+23,970 canonical rows (6.8%) carry no forecast at all — they contribute no mask
+cells, yet still occupy grid positions the bitmap counts through.
+
+> **Measured, on the canonical mask against a real WRDS rebuild** (a later
+> vintage: 1,330 canonical rows gone, 474 new ones, net −856 = 0.24% drift):
+> **326,401,062 of the 327,244,429 canonical cells realign — 99.74%.** Scoring
+> the canonical Forma forecast through this route lands on 326,279,721 cells and
+> gives R² **0.289232** / MAE **0.408311**, against **0.289172** / **0.408494**
+> on the canonical build itself. Sixth-decimal moves — well inside the precision
+> the paper reports, and far smaller than the ~5% sample difference you would
+> incur by dropping the mask and scoring on your own model's coverage instead.
+
+The keys form remains available and needs only the bit array plus the canonical
+`tabular_test` — but that artifact is never published, so `--grid-rows` is the
+supported route for outside users. `evaluate` names it in the error message if
+you hand it a bit array that does not fit your grid. Because the reference
+model's coverage is the binding constraint, the Full mask is exactly *its
+finite-prediction cells ∩ truth*; `scripts/build_full_sample_mask.py` also
+rebuilds and verifies it (`--expect 327244429`) offline from the Forma forecast,
+reproducing the same md5.
 
 Restricted to the Full mask, the shipped baselines reproduce the paper's Panel A
 Full column **to the digit** (all on the identical 327,244,429-cell sample):
@@ -497,6 +520,16 @@ paper submission**. Exhibit labels below refer to the paper's Table 1
 | `ffnn_large_b50__pf_full__test__predictions.parquet` | 4.5 GB | `915779a3…` | **FFNN (large)** 5-seed mixture — Panel A comparator row. |
 | `forma_lap05_fgrid__pf_full__test__predictions.parquet` | 7.4 GB | `1e8b0415…` | canonical R13 **Forma** Laplace mixture (absolute-error track) — the **Panel B** Full column. |
 | `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
+| `full_sample_grid_rows.parquet` | 0.8 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). |
+
+> **Joining these files to your own build:** `origin`/`quarter` in the forecasts
+> is a quarter-*end* timestamp at **microsecond** precision, while a canonical
+> `tabular_test` stores nanoseconds — `…23:59:59.999999` vs `…23:59:59.999999999`,
+> which are **not equal** as raw timestamps. `proforma20q` is immune (it
+> canonicalizes every origin to a calendar quarter), but a hand-written
+> `pd.merge` on the raw column silently returns nothing. Compare on
+> `pd.to_datetime(s).dt.to_period("Q")`. `full_sample_grid_rows.parquet` sidesteps
+> this by storing `origin` as a plain ISO date.
 
 They hold only **model outputs — no firm-level values**. This release covers
 the **point track (Panels A and B)**; the density track (Panel C — exact

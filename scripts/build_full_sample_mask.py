@@ -49,8 +49,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from proforma20q.schema import PARQUET_ENGINE, normalize_columns
-from proforma20q.truth_grid import TruthGrid
+from proforma20q.schema import FIRM_COL, ORIGIN_COL, PARQUET_ENGINE, normalize_columns
+from proforma20q.truth_grid import TruthGrid, canon_firm_ids, canon_origin
 
 
 def build_mask(forecast_path, truth_path, *, batch_size: int = 8_000_000, verbose: bool = True):
@@ -108,6 +108,32 @@ def mask_to_keys(mask: np.ndarray, grid: TruthGrid, truth_path) -> pd.DataFrame:
     })
 
 
+def write_grid_rows(grid: TruthGrid, out_path) -> int:
+    """Write the canonical row index the grid-aligned mask is a bitmap over.
+
+    The bit array is positional, so it is meaningless without the row set it
+    indexes -- and that row set cannot be recovered from the published forecast
+    (rows the reference model never forecast appear nowhere in it, yet still
+    occupy grid positions). This index is what lets a drifted rebuild use the
+    mask: ``evaluate --sample-mask <bits>.npy --grid-rows <this file>``.
+
+    ``origin`` is written as an ISO DATE string ("2010-03-31"), deliberately:
+    the canonical truth stores quarter-ends at nanosecond precision and the
+    published forecasts at microsecond precision (``…23:59:59.999999999`` vs
+    ``…23:59:59.999999``), so the two never compare equal as raw timestamps. A
+    date carries no sub-second component and cannot inherit that trap, and
+    unlike a "2010Q1" period string it parses on pandas' vectorized ISO path.
+    """
+    df = pd.DataFrame({
+        "grid_row": np.arange(grid.n_wide, dtype=np.int64),
+        FIRM_COL: canon_firm_ids(grid.truth_df[FIRM_COL]).to_numpy(),
+        ORIGIN_COL: pd.to_datetime(grid.truth_df[ORIGIN_COL])
+                      .dt.normalize().dt.strftime("%Y-%m-%d").to_numpy(),
+    })
+    df.to_parquet(out_path, index=False)
+    return len(df)
+
+
 def load_bits(bits_path, grid: TruthGrid) -> np.ndarray:
     """Unpack a shipped grid-aligned mask against ``grid``, validating its size.
 
@@ -140,6 +166,10 @@ def main(argv=None) -> int:
     ap.add_argument("--truth", required=True, help="tabular_test artifact (eval ground truth)")
     ap.add_argument("--out", default="results/masks")
     ap.add_argument("--keys", action="store_true", help="also write the portable keys parquet")
+    ap.add_argument("--grid-rows", action="store_true", dest="grid_rows",
+                    help="also write full_sample_grid_rows.parquet -- the canonical row "
+                         "index the bit array is a bitmap over, which lets a "
+                         "vintage-drifted rebuild use the mask (evaluate --grid-rows)")
     ap.add_argument("--expect", type=int, default=None, help="assert the cell count (e.g. 327244429)")
     args = ap.parse_args(argv)
 
@@ -161,10 +191,19 @@ def main(argv=None) -> int:
         np.save(bits_path, np.packbits(mask))
         md5 = hashlib.md5(Path(bits_path).read_bytes()).hexdigest()
         print(f"wrote {bits_path} ({n:,} cells)  md5={md5}")
-    if args.keys or args.from_bits:
+    # `--from-bits` exists to produce the keys form, so it implies --keys -- but not
+    # when the caller asked only for the row index. Materializing keys is one row per
+    # SET CELL (327M for the published mask, tens of GB in RAM); do not make someone
+    # pay that to obtain a 0.8 MB index.
+    if args.keys or (args.from_bits and not args.grid_rows):
         keys_path = out / "full_sample_mask_keys.parquet"
         mask_to_keys(mask, grid, args.truth).to_parquet(keys_path, index=False)
         print(f"wrote {keys_path} ({n:,} cells)")
+    if args.grid_rows:
+        rows_path = out / "full_sample_grid_rows.parquet"
+        n_rows = write_grid_rows(grid, rows_path)
+        md5 = hashlib.md5(Path(rows_path).read_bytes()).hexdigest()
+        print(f"wrote {rows_path} ({n_rows:,} rows)  md5={md5}")
     return 0
 
 

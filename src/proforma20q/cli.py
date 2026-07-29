@@ -175,7 +175,7 @@ def cmd_evaluate(args) -> int:
         return 2
 
     res = evaluate_forecasts(forecasts, truth, allow_missing=args.allow_missing,
-                             sample_mask=args.sample_mask)
+                             sample_mask=args.sample_mask, grid_rows=args.grid_rows)
     print("\n=== Leaderboard (global pool) ===")
     print(res.leaderboard(args.sort).to_string(index=False))
     if args.out:
@@ -354,7 +354,12 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--allow-missing", action="store_true")
     e.add_argument("--sample-mask", default=None,
                    help="restrict scoring to a pooled-sample mask (parquet of firm/target/"
-                        "origin/horizon keys), e.g. the paper's Full 327.2M-cell sample")
+                        "origin/horizon keys, or the grid-aligned .npy bit array), e.g. "
+                        "the paper's Full 327.2M-cell sample")
+    e.add_argument("--grid-rows", default=None,
+                   help="canonical row index (full_sample_grid_rows.parquet) that lets a "
+                        "grid-aligned --sample-mask apply to a vintage-drifted rebuild; "
+                        "the bitmap is realigned by (firm, origin) value")
     e.set_defaults(func=cmd_evaluate)
 
     v = sub.add_parser("validate", help="check a forecast file against the submission schema")

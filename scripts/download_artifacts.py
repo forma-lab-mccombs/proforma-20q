@@ -27,7 +27,15 @@ exhibit of Table 1, plus the density-family sidecar and the mask:
   when it is missing.
 * ``full_sample_mask_bits.npy`` -- the 327,244,429-cell Full-sample mask
   (grid-aligned packbits; no firm identifiers). Pass to
-  ``proforma20q evaluate --sample-mask``.
+  ``proforma20q evaluate --sample-mask``. Also ships in-repo under
+  ``artifacts/``.
+* ``full_sample_grid_rows.parquet`` -- the canonical row index (``grid_row,
+  firm, origin``) the mask is a bitmap over. Pass alongside the mask as
+  ``evaluate --grid-rows`` and the bitmap applies to a vintage-drifted rebuild,
+  matched by ``(firm, origin)`` value. Only 0.8 MB, and it is what keeps
+  reproducing the paper's sample from costing a 3.7 GB forecast download; it
+  cannot be derived from the forecast, which omits 23,970 canonical rows it
+  never forecast.
 
 The density track (Panel C -- exact mixture NLL/CRPS over the per-seed
 forecasts) is out of scope for this release; issue #3 tracks it.
@@ -60,6 +68,7 @@ ARTIFACTS: dict[str, str] = {
     "forma_lap05_fgrid__pf_full__test__predictions.parquet": "1e8b0415905eeac7cf46b052f5c1cbf5",
     "forma_lap05_fgrid__pf_full__test__predictions.nll.json": "a3d8659a201a2081dd693a8f0de051c3",
     "full_sample_mask_bits.npy": "a36008d8dbfeb56992f1049fd543d781",
+    "full_sample_grid_rows.parquet": "adbc2ae6eef7f23b3576af525cfbeeec",
 }
 
 

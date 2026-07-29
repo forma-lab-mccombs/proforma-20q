@@ -110,6 +110,90 @@ def test_keys_mask_survives_vintage_drift_and_bits_mask_does_not(tmp_path):
     assert res.n_common == len(survivors)
 
 
+def test_grid_rows_makes_the_bits_mask_survive_vintage_drift(tmp_path):
+    """The counterpart to the test above: with the published canonical row index,
+    the compact bit array *does* apply to a drifted rebuild, and lands on exactly
+    the cells the portable keys form selects."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=25, n_q=5, seed=4)
+    truth_path = tmp_path / "truth.parquet"
+    truth.to_parquet(truth_path, index=False)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[::3] = True
+    keys = bmask.mask_to_keys(mask, grid, truth_path)
+
+    rows_path = tmp_path / "full_sample_grid_rows.parquet"
+    n_rows = bmask.write_grid_rows(grid, rows_path)
+    assert n_rows == grid.n_wide
+    gr = pd.read_parquet(rows_path)
+    assert list(gr.columns) == ["grid_row", "firm", "origin"]
+    assert gr["origin"].dtype == object
+    # ISO dates, no sub-second component to inherit the us/ns mismatch
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", gr["origin"].iloc[0])
+    assert bmask.canon_origin(gr["origin"]).equals(
+        bmask.canon_origin(normalize_columns(truth)["origin"]))
+    assert gr["grid_row"].tolist() == list(range(grid.n_wide))
+
+    # a later vintage: one test row disappears
+    drifted = truth.iloc[1:].reset_index(drop=True)
+    fc = forecast_from_truth(drifted, noise=0.3, seed=2)
+
+    # without the index the bitmap is unusable ...
+    with pytest.raises(ValueError, match="VINTAGE DRIFT"):
+        evaluate_forecasts({"m": fc}, drifted, sample_mask=np.packbits(mask), verbose=False)
+
+    # ... with it, the same bitmap scores the paper's cells that still exist
+    r_rows = evaluate_forecasts({"m": fc}, drifted, sample_mask=np.packbits(mask),
+                                grid_rows=rows_path, verbose=False)
+    r_keys = evaluate_forecasts({"m": fc}, drifted, sample_mask=keys, verbose=False)
+    assert r_rows.n_common == r_keys.n_common > 0
+    a = r_rows.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0]
+    b = r_keys.leaderboard()[lambda d: d.model == "m"]["r2"].iloc[0]
+    assert np.isclose(a, b, equal_nan=True)
+
+
+def test_grid_rows_is_a_no_op_on_the_canonical_build(tmp_path):
+    """Passing the index when the build has NOT drifted must change nothing."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=10, n_q=4, seed=5)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[::2] = True
+    rows_path = tmp_path / "rows.parquet"
+    bmask.write_grid_rows(grid, rows_path)
+    fc = forecast_from_truth(truth, noise=0.2, seed=3)
+
+    plain = evaluate_forecasts({"m": fc}, truth, sample_mask=np.packbits(mask), verbose=False)
+    viar = evaluate_forecasts({"m": fc}, truth, sample_mask=np.packbits(mask),
+                              grid_rows=rows_path, verbose=False)
+    assert plain.n_common == viar.n_common
+    assert np.isclose(plain.leaderboard()["r2"].iloc[0],
+                      viar.leaderboard()["r2"].iloc[0], equal_nan=True)
+
+
+def test_grid_rows_mismatched_release_errors(tmp_path):
+    """A row index from a different build cannot align a mask it never described."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=10, n_q=4, seed=5)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    other = synthetic_truth(n_firms=7, n_q=4, seed=6)
+    rows_path = tmp_path / "rows.parquet"
+    bmask.write_grid_rows(TruthGrid(normalize_columns(other)), rows_path)
+    fc = forecast_from_truth(truth, noise=0.2, seed=3)
+
+    with pytest.raises(ValueError, match="SAME release"):
+        evaluate_forecasts({"m": fc}, truth, sample_mask=np.packbits(mask),
+                           grid_rows=rows_path, verbose=False)
+
+
 def test_bits_to_keys_conversion_needs_only_the_truth(tmp_path):
     """`--from-bits` produces the portable mask from the already-published bit
     array plus the canonical tabular_test -- no forecast, which is the artifact

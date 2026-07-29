@@ -40,8 +40,14 @@ import numpy as np
 import pandas as pd
 from scipy.special import ndtr, stdtr  # standard-normal / Student-t CDF (vectorized)
 
-from .schema import SIGMA_COL, normalize_columns
-from .truth_grid import TruthGrid, build_residual, build_residual_from_path
+from .schema import FIRM_COL, ORIGIN_COL, SIGMA_COL, normalize_columns
+from .truth_grid import (
+    TruthGrid,
+    build_residual,
+    build_residual_from_path,
+    canon_firm_ids,
+    canon_origin,
+)
 
 # Aggregation levels (group keys); empty list == the global pool.
 AGG_LEVELS: dict[str, list[str]] = {
@@ -229,6 +235,7 @@ def evaluate_forecasts(
     families: dict[str, tuple[str, float | None]] | None = None,
     allow_missing: bool = False,
     sample_mask: pd.DataFrame | str | None = None,
+    grid_rows: pd.DataFrame | str | None = None,
     verbose: bool = True,
 ) -> EvalResult:
     """Score one or more forecasts against a wide truth frame on the all-models
@@ -255,6 +262,14 @@ def evaluate_forecasts(
             all-models common sample``. Reproduces a paper's pooled column (e.g.
             the 327.2M-cell Full sample = the binding model's coverage) without
             needing that model's forecast. Keys off-grid are ignored.
+        grid_rows: optional canonical row index (frame or parquet path of
+            ``firm, origin`` in canonical grid order) that makes a *grid-aligned*
+            ``sample_mask`` usable against a build whose row set has drifted.
+            The bitmap is a bitmap over an exact row set, so without this a
+            rebuild that gains or loses one test row cannot use it at all; with
+            it, the mask is translated onto this build's grid by matching rows on
+            (firm, origin) value. Ignored for the keys mask form, which already
+            matches by value.
         verbose: print progress + coverage diagnostics.
 
     Returns:
@@ -274,7 +289,7 @@ def evaluate_forecasts(
     # requires the truth to be the canonical ``tabular_test``).
     mask_bits = None
     if sample_mask is not None:
-        mask_bits = _resolve_sample_mask(sample_mask, grid, log)
+        mask_bits = _resolve_sample_mask(sample_mask, grid, log, grid_rows=grid_rows)
 
     # ---- Phase 1: residual arrays per model ----
     residuals: dict[str, dict] = {}
@@ -463,13 +478,81 @@ def evaluate_forecasts(
                       invariant_ok=invariant_ok, dropped_targets=dropped)
 
 
-def _resolve_sample_mask(sample_mask, grid: TruthGrid, log) -> np.ndarray:
+def _remap_bits_via_grid_rows(arr: np.ndarray, grid: TruthGrid, grid_rows, log) -> np.ndarray:
+    """Translate a grid-aligned bit array built over the CANONICAL row set onto
+    ``grid``, matching rows by ``(firm, origin)`` value.
+
+    This is what makes the compact bitmap survive Compustat vintage drift. The
+    bitmap's cell order is ``block-major`` (``cell = block * n_rows + row``, with
+    ``block = target_id * n_h + horizon_idx``), so only the row axis has to be
+    permuted: reshape to ``(n_blocks, n_rows_canonical)``, gather the columns
+    this build shares with the canonical row set, and scatter them into the
+    build's own row positions. Rows the build lacks stay unset -- they are cells
+    the paper scored that this vintage cannot, which is the honest outcome.
+    """
+    gr = grid_rows
+    if isinstance(gr, (str, Path)):
+        gr = pd.read_parquet(gr)
+    gr = normalize_columns(gr)
+    if FIRM_COL not in gr.columns or ORIGIN_COL not in gr.columns:
+        raise ValueError(
+            f"grid-rows index must have '{FIRM_COL}' and '{ORIGIN_COL}' columns "
+            f"(aliases accepted); got {list(gr.columns)[:6]}")
+
+    n_rows_canon = len(gr)
+    n_blocks = len(grid.targets) * grid.n_h
+    n_cells_canon = n_blocks * n_rows_canon
+    packed_len = (n_cells_canon + 7) // 8
+    if arr.dtype == np.uint8 and arr.size == packed_len:
+        bits = np.unpackbits(arr)[:n_cells_canon].astype(bool)
+    elif arr.size == n_cells_canon:
+        bits = arr.astype(bool)
+    else:
+        raise ValueError(
+            f"sample mask has {arr.size} entries, but the supplied grid-rows index "
+            f"({n_rows_canon:,} rows x {len(grid.targets)} targets x {grid.n_h} horizons) "
+            f"implies {n_cells_canon:,} cells (a {packed_len}-byte np.packbits).\n"
+            f"  The mask and the row index must come from the SAME release -- a row "
+            f"index from a different build cannot align a mask it did not describe.")
+
+    canon_key = pd.MultiIndex.from_arrays(
+        [canon_firm_ids(gr[FIRM_COL]), canon_origin(gr[ORIGIN_COL])])
+    if canon_key.duplicated().any():
+        raise ValueError("grid-rows index has duplicate (firm, origin) rows")
+    this_key = pd.MultiIndex.from_arrays(
+        [canon_firm_ids(grid.truth_df[FIRM_COL]), canon_origin(grid.truth_df[ORIGIN_COL])])
+
+    pos = canon_key.get_indexer(this_key)          # this build's row -> canonical row
+    matched = pos >= 0
+    n_matched = int(matched.sum())
+
+    out = np.zeros((n_blocks, grid.n_wide), dtype=bool)
+    out[:, matched] = bits.reshape(n_blocks, n_rows_canon)[:, pos[matched]]
+    out = out.reshape(-1)
+
+    kept, total = int(out.sum()), int(bits.sum())
+    log(f"Sample mask (grid-aligned, realigned via grid-rows index): "
+        f"{kept:,} of {total:,} canonical cell(s) usable "
+        f"({kept / total:.4%}); {n_matched:,} of {n_rows_canon:,} canonical rows "
+        f"present in this build, {grid.n_wide - n_matched:,} row(s) here are not in "
+        f"the canonical set.")
+    if n_matched == 0:
+        raise ValueError(
+            "no canonical row matched this build -- the grid-rows index and the truth "
+            "frame share no (firm, origin) keys. Check that both describe the same "
+            "task/split (e.g. a test-split index against a test truth).")
+    return out
+
+
+def _resolve_sample_mask(sample_mask, grid: TruthGrid, log, grid_rows=None) -> np.ndarray:
     """Return a length-``grid.n_cells`` bool mask from either a grid-aligned bit
     array (ndarray or ``.npy`` path) or a keys frame/parquet."""
     obj = sample_mask
     if isinstance(obj, (str, Path)) and str(obj).endswith(".npy"):
         obj = np.load(obj)
     if isinstance(obj, np.ndarray):
+        if grid_rows is not None:
+            return _remap_bits_via_grid_rows(obj, grid, grid_rows, log)
         n_cells = grid.n_cells
         packed_len = (n_cells + 7) // 8
         # Validate the source size BEFORE any truncation, so a mask built against a
@@ -490,12 +573,17 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log) -> np.ndarray:
                 f"  The most likely cause is Compustat VINTAGE DRIFT, not a mistake: the "
                 f"grid-aligned mask is a bitmap over an exact row set (~{mask_rows:,} "
                 f"rows), so a rebuild that gains or loses even one test row cannot use "
-                f"it. The README says outright that a fresh pull will not be "
+                f"it as-is. The README says outright that a fresh pull will not be "
                 f"bit-identical.\n"
-                f"  Use the portable KEYS form instead -- "
-                f"`--sample-mask full_sample_mask_keys.parquet` -- which matches by "
-                f"(firm, target, origin, horizon) value and simply intersects with "
-                f"whatever rows your build has. Convert the bit array once with:\n"
+                f"  FIX: pass the published canonical row index alongside it --\n"
+                f"    proforma20q evaluate ... --sample-mask <bits>.npy "
+                f"--grid-rows full_sample_grid_rows.parquet\n"
+                f"  which realigns the bitmap onto your grid by (firm, origin) value, "
+                f"scoring the paper's cells minus the rows your vintage lacks.\n"
+                f"  Alternatively use the portable KEYS form "
+                f"(`--sample-mask full_sample_mask_keys.parquet`), which matches by "
+                f"(firm, target, origin, horizon) value -- but building it needs the "
+                f"canonical tabular_test, which is not published:\n"
                 f"    python scripts/build_full_sample_mask.py --from-bits <bits>.npy "
                 f"--truth <canonical tabular_test>.parquet --out artifacts")
         bits = bits.astype(bool)
