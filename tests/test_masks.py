@@ -130,9 +130,11 @@ def test_grid_rows_makes_the_bits_mask_survive_vintage_drift(tmp_path):
     assert n_rows == grid.n_wide
     gr = pd.read_parquet(rows_path)
     assert list(gr.columns) == ["grid_row", "firm", "origin"]
-    assert gr["origin"].dtype == object
-    # ISO dates, no sub-second component to inherit the us/ns mismatch
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", gr["origin"].iloc[0])
+    # Stored as TEXT, not a timestamp -- that is what keeps the us/ns precision
+    # trap out of the index. Assert the property, not the dtype spelling: pandas 3
+    # reads these back as StringDtype where 2.x gives object.
+    assert not pd.api.types.is_datetime64_any_dtype(gr["origin"])
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(v)) for v in gr["origin"].head(10))
     assert canon_origin(gr["origin"]).equals(canon_origin(normalize_columns(truth)["origin"]))
     assert gr["grid_row"].tolist() == list(range(grid.n_wide))
 
