@@ -50,7 +50,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from proforma20q.schema import FIRM_COL, ORIGIN_COL, PARQUET_ENGINE, normalize_columns
-from proforma20q.truth_grid import TruthGrid, canon_firm_ids, canon_origin
+from proforma20q.truth_grid import TruthGrid, canon_firm_ids
 
 
 def build_mask(forecast_path, truth_path, *, batch_size: int = 8_000_000, verbose: bool = True):
@@ -124,11 +124,18 @@ def write_grid_rows(grid: TruthGrid, out_path) -> int:
     date carries no sub-second component and cannot inherit that trap, and
     unlike a "2010Q1" period string it parses on pandas' vectorized ISO path.
     """
+    origin = grid.truth_df[ORIGIN_COL]
+    if isinstance(origin.dtype, pd.PeriodDtype):
+        # Defensive, and currently unreachable: `canon_origin` is
+        # ``pd.to_datetime(s).dt.to_period("Q")``, which raises on a Period column,
+        # so `TruthGrid.__init__` rejects such a frame before it can get here. Kept
+        # so this stays correct if canon_origin ever learns the dtype -- take the
+        # period's END so the written date lands in the quarter it came from.
+        origin = origin.dt.to_timestamp(how="end")
     df = pd.DataFrame({
         "grid_row": np.arange(grid.n_wide, dtype=np.int64),
         FIRM_COL: canon_firm_ids(grid.truth_df[FIRM_COL]).to_numpy(),
-        ORIGIN_COL: pd.to_datetime(grid.truth_df[ORIGIN_COL])
-                      .dt.normalize().dt.strftime("%Y-%m-%d").to_numpy(),
+        ORIGIN_COL: pd.to_datetime(origin).dt.normalize().dt.strftime("%Y-%m-%d").to_numpy(),
     })
     df.to_parquet(out_path, index=False)
     return len(df)

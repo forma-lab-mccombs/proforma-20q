@@ -489,6 +489,14 @@ def _remap_bits_via_grid_rows(arr: np.ndarray, grid: TruthGrid, grid_rows, log) 
     this build shares with the canonical row set, and scatter them into the
     build's own row positions. Rows the build lacks stay unset -- they are cells
     the paper scored that this vintage cannot, which is the honest outcome.
+
+    The index pins the ROW axis only; the target and horizon sets come from the
+    caller's truth frame. A truth frame with a different task shape therefore
+    fails the size check rather than misaligning silently, and the message names
+    both causes. (Embedding the block counts in the index would make that check
+    exact rather than inferred, but reading parquet key-value metadata means
+    either a pyarrow runtime dependency -- it is currently dev-only, the engine
+    is fastparquet -- or engine-specific plumbing here. Deferred deliberately.)
     """
     gr = grid_rows
     if isinstance(gr, (str, Path)):
@@ -512,8 +520,15 @@ def _remap_bits_via_grid_rows(arr: np.ndarray, grid: TruthGrid, grid_rows, log) 
             f"sample mask has {arr.size} entries, but the supplied grid-rows index "
             f"({n_rows_canon:,} rows x {len(grid.targets)} targets x {grid.n_h} horizons) "
             f"implies {n_cells_canon:,} cells (a {packed_len}-byte np.packbits).\n"
-            f"  The mask and the row index must come from the SAME release -- a row "
-            f"index from a different build cannot align a mask it did not describe.")
+            f"  Two causes are possible, and the target/horizon counts above tell them "
+            f"apart:\n"
+            f"  (a) the mask and the row index come from DIFFERENT releases -- a row "
+            f"index cannot align a mask it did not describe; or\n"
+            f"  (b) YOUR TRUTH FRAME does not carry the canonical task shape. The index "
+            f"pins only the row axis, so the target set and horizon set are taken from "
+            f"the truth frame you passed. A tabular_test missing a target column (or "
+            f"built for a different horizon range) changes the block count and lands "
+            f"here. Expected for pf_full: 78 targets x 20 horizons.")
 
     canon_key = pd.MultiIndex.from_arrays(
         [canon_firm_ids(gr[FIRM_COL]), canon_origin(gr[ORIGIN_COL])])
@@ -590,6 +605,9 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log, grid_rows=None) -> n
         log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {n_cells:,} cells.")
         return bits
     # keys form
+    if grid_rows is not None:
+        log("Note: --grid-rows ignored -- the keys mask already matches by "
+            "(firm, target, origin, horizon) value and needs no realignment.")
     mdf = pd.read_parquet(obj) if isinstance(obj, (str, Path)) else obj
     mrow_id, mvalid = grid.map_forecast_rows(normalize_columns(mdf))
     bits = np.zeros(grid.n_cells, dtype=bool)

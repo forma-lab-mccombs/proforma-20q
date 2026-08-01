@@ -433,7 +433,9 @@ fresh pull drifts. **Pass the published canonical row index alongside it and the
 bitmap works anyway:**
 
 ```bash
-python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # 0.8 MB
+# 0.8 MB; available once the archival record is live (see Data & artifacts) --
+# until then this download errors on the ZENODO_RECORD placeholder by design.
+python scripts/download_artifacts.py --only full_sample_grid_rows.parquet
 proforma20q evaluate my_forecasts.parquet --against baselines \
     --sample-mask artifacts/full_sample_mask_bits.npy \
     --grid-rows data/artifacts/full_sample_grid_rows.parquet

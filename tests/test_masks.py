@@ -114,7 +114,7 @@ def test_grid_rows_makes_the_bits_mask_survive_vintage_drift(tmp_path):
     """The counterpart to the test above: with the published canonical row index,
     the compact bit array *does* apply to a drifted rebuild, and lands on exactly
     the cells the portable keys form selects."""
-    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.truth_grid import TruthGrid, canon_origin
     from proforma20q.schema import normalize_columns
 
     truth = synthetic_truth(n_firms=25, n_q=5, seed=4)
@@ -133,8 +133,7 @@ def test_grid_rows_makes_the_bits_mask_survive_vintage_drift(tmp_path):
     assert gr["origin"].dtype == object
     # ISO dates, no sub-second component to inherit the us/ns mismatch
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", gr["origin"].iloc[0])
-    assert bmask.canon_origin(gr["origin"]).equals(
-        bmask.canon_origin(normalize_columns(truth)["origin"]))
+    assert canon_origin(gr["origin"]).equals(canon_origin(normalize_columns(truth)["origin"]))
     assert gr["grid_row"].tolist() == list(range(grid.n_wide))
 
     # a later vintage: one test row disappears
@@ -176,6 +175,74 @@ def test_grid_rows_is_a_no_op_on_the_canonical_build(tmp_path):
                       viar.leaderboard()["r2"].iloc[0], equal_nan=True)
 
 
+def test_grid_rows_error_paths(tmp_path):
+    """The guards that keep a bad index from silently misaligning a sample."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=10, n_q=4, seed=5)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[::2] = True
+    packed = np.packbits(mask)
+    fc = forecast_from_truth(truth, noise=0.2, seed=3)
+    rows_path = tmp_path / "rows.parquet"
+    bmask.write_grid_rows(grid, rows_path)
+    gr = pd.read_parquet(rows_path)
+
+    # missing key columns
+    with pytest.raises(ValueError, match="must have"):
+        evaluate_forecasts({"m": fc}, truth, sample_mask=packed,
+                           grid_rows=gr[["grid_row"]], verbose=False)
+
+    # duplicate (firm, origin) rows in the index
+    dupe = pd.concat([gr.iloc[:1], gr.iloc[:-1]], ignore_index=True)
+    with pytest.raises(ValueError, match="duplicate"):
+        evaluate_forecasts({"m": fc}, truth, sample_mask=packed,
+                           grid_rows=dupe, verbose=False)
+
+    # an index of the right SHAPE but describing entirely different firms
+    alien = gr.copy()
+    alien["firm"] = "ZZ" + alien["firm"].astype(str)
+    with pytest.raises(ValueError, match="no canonical row matched"):
+        evaluate_forecasts({"m": fc}, truth, sample_mask=packed,
+                           grid_rows=alien, verbose=False)
+
+
+def test_period_origins_are_rejected_upstream_not_by_the_index(tmp_path):
+    """Pins WHY write_grid_rows needs no Period support: canon_origin is
+    ``pd.to_datetime(...).dt.to_period("Q")``, which raises on a Period column, so
+    TruthGrid rejects such a frame and the dtype can never reach the writer."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = normalize_columns(synthetic_truth(n_firms=6, n_q=4, seed=9))
+    as_period = truth.copy()
+    as_period["origin"] = pd.PeriodIndex(pd.to_datetime(truth["origin"]), freq="Q")
+    with pytest.raises(Exception):
+        TruthGrid(as_period)
+
+
+def test_grid_rows_with_keys_mask_is_reported_not_silent(tmp_path, capsys):
+    """Passing --grid-rows with a keys mask does nothing; say so."""
+    from proforma20q.truth_grid import TruthGrid
+    from proforma20q.schema import normalize_columns
+
+    truth = synthetic_truth(n_firms=8, n_q=4, seed=5)
+    truth_path = tmp_path / "t.parquet"
+    truth.to_parquet(truth_path, index=False)
+    grid = TruthGrid(normalize_columns(truth))
+    mask = np.zeros(grid.n_cells, dtype=bool)
+    mask[::2] = True
+    keys = bmask.mask_to_keys(mask, grid, truth_path)
+    rows_path = tmp_path / "rows.parquet"
+    bmask.write_grid_rows(grid, rows_path)
+    fc = forecast_from_truth(truth, noise=0.2, seed=3)
+
+    evaluate_forecasts({"m": fc}, truth, sample_mask=keys, grid_rows=rows_path, verbose=True)
+    assert "grid-rows ignored" in capsys.readouterr().out
+
+
 def test_grid_rows_mismatched_release_errors(tmp_path):
     """A row index from a different build cannot align a mask it never described."""
     from proforma20q.truth_grid import TruthGrid
@@ -189,7 +256,7 @@ def test_grid_rows_mismatched_release_errors(tmp_path):
     bmask.write_grid_rows(TruthGrid(normalize_columns(other)), rows_path)
     fc = forecast_from_truth(truth, noise=0.2, seed=3)
 
-    with pytest.raises(ValueError, match="SAME release"):
+    with pytest.raises(ValueError, match="DIFFERENT releases"):
         evaluate_forecasts({"m": fc}, truth, sample_mask=np.packbits(mask),
                            grid_rows=rows_path, verbose=False)
 
