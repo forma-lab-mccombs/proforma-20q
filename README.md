@@ -433,9 +433,7 @@ fresh pull drifts. **Pass the published canonical row index alongside it and the
 bitmap works anyway:**
 
 ```bash
-# 0.8 MB; available once the archival record is live (see Data & artifacts) --
-# until then this download errors on the ZENODO_RECORD placeholder by design.
-python scripts/download_artifacts.py --only full_sample_grid_rows.parquet
+python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # 0.8 MB
 proforma20q evaluate my_forecasts.parquet --against baselines \
     --sample-mask artifacts/full_sample_mask_bits.npy \
     --grid-rows data/artifacts/full_sample_grid_rows.parquet
@@ -506,14 +504,20 @@ bitmap, no firm-level values:
 |---|---|---|---|
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
 
-The remaining artifacts are deposited to an archival record (Zenodo) **at
-paper submission**. Exhibit labels below refer to the paper's Table 1
-(Panel A = squared-error track, Panel B = absolute-error track):
+The remaining artifacts are deposited at
+**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**
+(CC BY 4.0, ~21.6 GB total). Fetch and verify them with:
 
-> **⚠ Not yet available (placeholder).** No record exists yet. Until then
-> `scripts/download_artifacts.py` is a placeholder that **will not run** (its
-> `ZENODO_RECORD` is unset and the script errors out). The md5s are final, so
-> it goes live the moment the record id is filled in.
+```bash
+python scripts/download_artifacts.py --out data/artifacts
+python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # or a subset
+```
+
+Every file is md5-checked against the pins below before it is accepted, and a
+download is staged under `.part` until it verifies — a truncated or substituted
+file fails loudly instead of scoring silently against the wrong bytes. Exhibit
+labels refer to the paper's Table 1 (Panel A = squared-error track, Panel B =
+absolute-error track):
 
 | artifact | size | md5 | for |
 |---|---|---|---|

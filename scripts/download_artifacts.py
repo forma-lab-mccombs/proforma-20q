@@ -1,12 +1,9 @@
 """Download + md5-verify the released ProForma-20Q data artifacts from Zenodo.
 
-    ============================ NOT YET ACTIVE ============================
-    PLACEHOLDER. The artifacts are deposited to an archival record (Zenodo)
-    at paper submission. Until then no record exists, ``ZENODO_RECORD``
-    below is an UNFILLED placeholder, and this script intentionally refuses to
-    run -- there is nothing to download yet. The md5s ARE final, so this script
-    becomes live the moment the record id is filled in.
-    =======================================================================
+The artifacts are deposited at https://doi.org/10.5281/zenodo.21269003 (CC BY
+4.0). Every file is verified against the md5 pinned below, so a truncated or
+substituted download fails loudly rather than scoring silently against the
+wrong bytes.
 
 Nothing WRDS-derived is released. The public artifacts are model OUTPUTS and a
 coverage mask (no firm-level Compustat values) -- one file per point-track
@@ -40,8 +37,7 @@ exhibit of Table 1, plus the density-family sidecar and the mask:
 The density track (Panel C -- exact mixture NLL/CRPS over the per-seed
 forecasts) is out of scope for this release; issue #3 tracks it.
 
-Set ``ZENODO_RECORD`` below to the published Zenodo record id (see the DOI on the
-repo's release / README), then::
+Usage::
 
     python scripts/download_artifacts.py --out data/artifacts
     python scripts/download_artifacts.py --only full_sample_mask_bits.npy
@@ -55,8 +51,8 @@ import urllib.request
 from pathlib import Path
 
 # The Zenodo record id of the published artifact bundle (the number in the DOI
-# 10.5281/zenodo.<ZENODO_RECORD>). Filled in at deposit time (paper submission).
-ZENODO_RECORD = "REPLACE_WITH_ZENODO_RECORD_ID"
+# 10.5281/zenodo.<ZENODO_RECORD>).
+ZENODO_RECORD = "21269003"
 
 # filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json).
 # Digests verified 2026-07-27 directly over the canonical store, whose

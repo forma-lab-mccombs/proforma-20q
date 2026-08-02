@@ -305,9 +305,20 @@ def test_download_artifacts_md5_guard_and_pins(tmp_path):
     # every pin is a full 32-hex md5 -- catches placeholders AND the
     # transcription bug class (an ellipsized or truncated paste)
     assert all(re.fullmatch(r"[0-9a-f]{32}", v) for v in dl.ARTIFACTS.values())
-    # the release-placeholder guard fires until ZENODO_RECORD is set
-    with pytest.raises(SystemExit):
-        dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
+    # the record id is live, so the script must NOT be in its refuse-to-run state
+    assert re.fullmatch(r"[0-9]+", dl.ZENODO_RECORD)
+
+    # ...but the placeholder guard itself must still work. Exercise it by putting
+    # the module back into the pre-release state, rather than by leaving the repo
+    # in it -- otherwise this test would be asserting the release never happened.
+    # (No network: the guard fires before any fetch.)
+    orig = dl.ZENODO_RECORD
+    dl.ZENODO_RECORD = "REPLACE_WITH_ZENODO_RECORD_ID"
+    try:
+        with pytest.raises(SystemExit, match="unfilled release placeholders"):
+            dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
+    finally:
+        dl.ZENODO_RECORD = orig
 
 
 def test_download_artifacts_only_cannot_drop_the_sidecar():
