@@ -305,9 +305,27 @@ def test_download_artifacts_md5_guard_and_pins(tmp_path):
     # every pin is a full 32-hex md5 -- catches placeholders AND the
     # transcription bug class (an ellipsized or truncated paste)
     assert all(re.fullmatch(r"[0-9a-f]{32}", v) for v in dl.ARTIFACTS.values())
-    # the release-placeholder guard fires until ZENODO_RECORD is set
-    with pytest.raises(SystemExit):
-        dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
+    # the record id is live, so the script must NOT be in its refuse-to-run state
+    assert re.fullmatch(r"[0-9]+", dl.ZENODO_RECORD)
+
+    # ...but the placeholder guard itself must still work. Exercise it by putting
+    # the module back into the pre-release state, rather than by leaving the repo
+    # in it -- otherwise this test would be asserting the release never happened.
+    #
+    # `fetch` is stubbed to fail loudly rather than left live: the guard firing is
+    # what keeps this test offline, and the scenario the test exists for is the
+    # guard being BROKEN -- in which case an unstubbed main() would reach a real
+    # urlretrieve and report an opaque HTTPError from CI instead of the actual
+    # failure. Stubbing keeps it hermetic in both outcomes.
+    orig_record, orig_fetch = dl.ZENODO_RECORD, dl.fetch
+    dl.ZENODO_RECORD = "REPLACE_WITH_ZENODO_RECORD_ID"
+    dl.fetch = lambda *a, **k: pytest.fail(
+        "placeholder guard did not fire: main() reached the network path")
+    try:
+        with pytest.raises(SystemExit, match="unfilled release placeholders"):
+            dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
+    finally:
+        dl.ZENODO_RECORD, dl.fetch = orig_record, orig_fetch
 
 
 def test_download_artifacts_only_cannot_drop_the_sidecar():
@@ -340,3 +358,25 @@ def test_readme_artifact_digests_match_script_pins():
         assert name in prefixes, f"{name} is pinned in download_artifacts.py but absent from the README tables"
         assert md5.startswith(prefixes[name]), \
             f"README digest `{prefixes[name]}…` for {name} does not match the pinned md5 {md5}"
+
+    # The README also states the DOI in prose. Nothing otherwise ties it to the id
+    # the script actually fetches from, so a corrected record id could leave the
+    # documented DOI pointing at a different record.
+    assert f"zenodo.{dl.ZENODO_RECORD}" in readme, \
+        f"README does not mention zenodo.{dl.ZENODO_RECORD}; the DOI and ZENODO_RECORD have drifted"
+
+
+def test_release_documentation_pdf_matches_the_readme_digest():
+    """The README block says this repository holds the canonical PDF and that a
+    diverging copy elsewhere is the stale one -- but the digest it quotes is
+    prose. Hash the file and hold the prose to it, so the claim cannot rot."""
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    stated = re.findall(r"sha256\s+([0-9a-f]{64})", readme)
+    assert stated, "README no longer states a sha256 for release_documentation.pdf"
+    pdf = _ROOT / "docs" / "release_documentation.pdf"
+    assert pdf.exists(), "docs/release_documentation.pdf is missing from this repository"
+    actual = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    assert actual in stated, (
+        f"docs/release_documentation.pdf hashes to {actual}, which the README does not "
+        f"state (it says {stated}). Regenerating the PDF means updating the digest in "
+        f"BOTH repositories' READMEs.")
