@@ -549,6 +549,13 @@ mixture NLL/CRPS) needs the five per-seed forecasts and is out of scope here
 | [`docs/release_documentation.pdf`](docs/release_documentation.pdf) | Detailed technical documentation in three parts: **A** the data pipeline (sample formation, splits, regularization, the 78-item universe, availability, and the accounting identities), **B** model training/implementation detail and every competitor's exact specification, **C** the LLM benchmark protocol with the prompts reproduced in full. |
 | [`docs/prompts/`](docs/prompts/) | The byte-exact system prompts for both elicitation arms, with published SHA-256 anchors ([`docs/README.md`](docs/README.md)). Part C's typeset copies are ASCII transliterations; these files are the originals. |
 
+> **This repository holds the canonical `release_documentation.pdf`**
+> (`sha256 55fa6f76dffaca29b1027a8438d5c09e26dc182d89790f50ef9ec5803a46fa5e`).
+> A byte-identical copy also ships in the companion model repository, so that
+> anyone holding only that repository still has Parts B and C, which describe
+> its code. If the two digests ever differ, this copy wins — regenerate both
+> together.
+
 ---
 
 ## Task definition = single source of truth
