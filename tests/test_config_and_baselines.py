@@ -149,9 +149,10 @@ def test_naive_alone_still_forecasts_every_truth_cell(tmp_path):
 
 def test_baseline_column_projection_reads_only_what_it_needs():
     """The three canonical splits are 2,547 columns / ~12 GB together. `naive`
-    reads one column per target, `fade` adds the 20 horizons; only the linear
-    family needs the feature matrix. Reading everything regardless is what put
-    `baselines --which naive,fade` over the memory ceiling (I-3)."""
+    reads the four seasonal-alignment levels per target, `fade` reads `level_0`
+    plus the 20 horizons; only the linear family needs the feature matrix.
+    Reading everything regardless is what put `baselines --which naive,fade`
+    over the memory ceiling (I-3)."""
     from proforma20q.baselines.run import _columns_for
 
     cols = (["firm", "origin", "scale_level_0"]
@@ -214,6 +215,26 @@ def test_fade_fits_one_ar1_per_item_and_horizon():
     coeffs = _fit_fade(train, ["a", "b"], [1])
     np.testing.assert_allclose(coeffs[("a", 1)], (0.9, 0.5), atol=1e-9)
     np.testing.assert_allclose(coeffs[("b", 1)], (-0.2, 1.0), atol=1e-9)
+
+
+def test_fade_fallbacks_keep_every_pair_finite():
+    """The fallback branches exist to keep a fade forecast finite everywhere --
+    one NaN prediction would shrink every model's common sample (the invariant
+    evaluate warns about). None of them is reachable from the synthetic-build
+    fixture (all its pairs take the OLS path), so pin each branch directly:
+    sub-MIN_FIT_N sample -> no-signal fade (0, label mean); no finite pairs at
+    all -> plain RW (1, 0); constant x -> no-signal fade."""
+    from proforma20q.baselines.naive import MIN_FIT_N, _fit_fade
+
+    short = pd.DataFrame({"a_level_0": [1.0, 2.0], "a_t1": [3.0, 5.0]})
+    assert _fit_fade(short, ["a"], [1]) == {("a", 1): (0.0, 4.0)}
+
+    empty = pd.DataFrame({"a_level_0": [np.nan] * 3, "a_t1": [1.0, 2.0, 3.0]})
+    assert _fit_fade(empty, ["a"], [1]) == {("a", 1): (1.0, 0.0)}
+
+    const = pd.DataFrame({"a_level_0": np.zeros(MIN_FIT_N),
+                          "a_t1": np.full(MIN_FIT_N, 2.5)})
+    assert _fit_fade(const, ["a"], [1]) == {("a", 1): (0.0, 2.5)}
 
 
 def test_elasticnet_and_linear_run(tmp_path):

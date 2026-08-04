@@ -69,7 +69,11 @@ def test_naive_is_change_space_anchor(built):
     naive = run_baseline("naive", train, test, val_df=val, targets=targets)
     res = evaluate_forecasts({"naive": naive}, test, verbose=False)
     r2 = res.leaderboard()[lambda d: d.model == "naive"]["r2"].iloc[0]
-    # RW predicts zero change -> its change-space R2 is ~0 by construction.
+    # The seasonal RW carries no model signal, so its change-space R2 sits
+    # near zero on a synthetic panel (canonically it is ~-0.04: the seasonal
+    # base is 1-4 quarters stale, unlike a plain no-change RW whose R2 is ~0
+    # by construction). Loose bound -- the exact seasonal mapping is pinned by
+    # test_naive_is_the_seasonal_random_walk.
     assert abs(r2) < 0.05
 
 

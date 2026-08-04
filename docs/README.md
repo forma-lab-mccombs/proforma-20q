@@ -8,7 +8,7 @@ model. Three parts:
 | Part | Contents |
 |---|---|
 | **A. Data** | Sample formation and splits (with the full waterfall), the regularization that maps reported accounting values into model space, the 78-item target universe, its reporting availability, and the accounting identities linking the items. |
-| **B. Models** | Forma's training and implementation detail — embeddings, output heads, loss, masking, curriculum, batching, inference, and the seed mixture — plus the exact specification of every competitor (elastic net, random forest, feed-forward networks, chained GBM, pooled fade/AR(1), naive, Chronos-2, LLM panel). |
+| **B. Models** | Forma's training and implementation detail — embeddings, output heads, loss, masking, curriculum, batching, inference, and the seed mixture — plus the exact specification of every competitor (elastic net, random forest, feed-forward networks, chained GBM, per-(item, horizon) fade/AR(1), seasonal-RW naive, Chronos-2, LLM panel). |
 | **C. LLM benchmark** | The elicitation protocol (inputs, origin sampler, targets, the two prompt arms, models and settings, the decoding-noise subset, the common sample) and the prompts reproduced in full. |
 
 Every number in the document is produced by the pipeline released here. The

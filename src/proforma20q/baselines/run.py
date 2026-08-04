@@ -75,12 +75,17 @@ def run_baselines(
     all_cols = tabular_columns(paths["test"])
     targets = discover_targets(all_cols)
     cols = _columns_for(which, all_cols, targets)
+    # The fit splits never feed `naive`, so its seasonal lags (level_1..3, 234
+    # columns / ~540 MB on the canonical train split) are read for test only.
+    fit_which = [n for n in which if n in _NEEDS_FIT_SPLITS]
+    fit_cols = _columns_for(fit_which, all_cols, targets) if fit_which else []
     log(f"Loading tabular splits for suffix '{suffix}' "
-        f"({len(cols)} of {len(all_cols)} columns for {', '.join(which)})...")
+        f"({len(cols)} test / {len(fit_cols)} fit of {len(all_cols)} columns "
+        f"for {', '.join(which)})...")
     test_df = load_tabular(paths["test"], columns=cols)
-    if any(n in _NEEDS_FIT_SPLITS for n in which):
-        train_df = load_tabular(paths["train"], columns=cols)
-        val_df = load_tabular(paths["val"], columns=cols)
+    if fit_which:
+        train_df = load_tabular(paths["train"], columns=fit_cols)
+        val_df = load_tabular(paths["val"], columns=fit_cols)
     else:
         train_df = val_df = None      # `naive` never looks at the fit splits
     fit_rows = "" if train_df is None else \

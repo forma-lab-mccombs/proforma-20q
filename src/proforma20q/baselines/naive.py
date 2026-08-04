@@ -22,11 +22,11 @@
   *across* items instead is a different, much weaker baseline (Full-sample
   R^2 0.106 vs 0.183) -- an earlier release shipped that by mistake.
 
-  Pairs with fewer than ``min_fit_n`` finite fit rows (never the case on a
+  Pairs with fewer than ``MIN_FIT_N`` finite fit rows (never the case on a
   canonical-scale build) fall back to the bounded no-signal fade
-  ``(rho=0, b=mean of the available labels)``, or to the random walk
-  ``(rho=1, b=0)`` when there are no finite rows at all, so coverage stays
-  finite and the common sample cannot silently shrink.
+  ``(rho=0, b=mean of the available labels)``, or to the plain random walk on
+  ``level_0`` (``rho=1, b=0``) when there are no finite rows at all, so
+  coverage stays finite and the common sample cannot silently shrink.
 """
 from __future__ import annotations
 
@@ -36,8 +36,21 @@ import pandas as pd
 from ..schema import FIRM_COL, ORIGIN_COL
 from .common import discover_targets, forecast_block, parse_target_col, target_columns
 
-#: Number of lagged level columns the tabular view carries (``level_0..3``).
+#: Quarters per year -- the period of the seasonal alignment. Fixed by the
+#: calendar, NOT by how many lagged level columns the build writes.
+SEASONAL_PERIOD = 4
+
+#: Number of lagged level columns the tabular view carries (``level_0..3``);
+#: mirrors ``recent_levels`` in ``task.yaml``. Coincides with
+#: ``SEASONAL_PERIOD`` today, which is what lets every horizon find a
+#: same-fiscal-quarter base among the built lags.
 N_LEVEL_LAGS = 4
+
+#: Minimum finite fit rows for a per-(item, horizon) fade fit; below it the
+#: pair falls back to the bounded no-signal fade. Matches the internal
+#: pipeline's threshold. Never binding at canonical scale, so it is a module
+#: constant rather than a public knob.
+MIN_FIT_N = 100
 
 
 def seasonal_lag(horizon: int) -> int:
@@ -46,7 +59,9 @@ def seasonal_lag(horizon: int) -> int:
     ``(4 - h % 4) % 4``: the youngest available lag whose distance to the
     forecast quarter, ``h + lag``, is a whole number of years.
     """
-    return (N_LEVEL_LAGS - horizon % N_LEVEL_LAGS) % N_LEVEL_LAGS
+    if horizon < 1:
+        raise ValueError(f"horizon must be >= 1, got {horizon}")
+    return (SEASONAL_PERIOD - horizon % SEASONAL_PERIOD) % SEASONAL_PERIOD
 
 
 def _seasonal_base(df: pd.DataFrame, item: str, horizon: int) -> np.ndarray:
@@ -54,8 +69,9 @@ def _seasonal_base(df: pd.DataFrame, item: str, horizon: int) -> np.ndarray:
     if col not in df.columns:
         raise KeyError(
             f"naive needs {col} to predict {item}_t{horizon} (seasonal random "
-            f"walk reads level_0..{N_LEVEL_LAGS - 1}); it was projected out of "
-            "the read")
+            f"walk reads level_0..{N_LEVEL_LAGS - 1}); it is absent from the "
+            "frame -- either projected out of the read, or never built "
+            "(task.yaml recent_levels)")
     return df[col].to_numpy()
 
 
@@ -86,7 +102,7 @@ def predict_naive(test_df: pd.DataFrame, targets: list[str] | None = None) -> pd
 
 
 def _fit_fade(fit_dfs, targets: list[str], horizons: list[int],
-              min_fit_n: int = 100) -> dict[tuple[str, int], tuple[float, float]]:
+              min_fit_n: int = MIN_FIT_N) -> dict[tuple[str, int], tuple[float, float]]:
     """AR(1) per ``(item, horizon)``: 1,560 closed-form OLS fits at full scale.
 
     For each pair, fits ``y = rho * x + b`` with ``x = {item}_level_0``,
@@ -99,8 +115,9 @@ def _fit_fade(fit_dfs, targets: list[str], horizons: list[int],
 
     Fallbacks (all finite, so a fade forecast can never shrink a common
     sample): fewer than ``min_fit_n`` finite rows -> ``(0, label mean)``; no
-    finite rows at all -> ``(1, 0)`` (random walk); ``x`` constant in the fit
-    sample (e.g. an all-zero item at long horizons) -> ``(0, label mean)``.
+    finite rows at all -> ``(1, 0)``, the *plain* random walk on ``level_0``
+    (not the seasonal walk ``naive`` uses); ``x`` constant in the fit sample
+    (e.g. an all-zero item at long horizons) -> ``(0, label mean)``.
     """
     if isinstance(fit_dfs, pd.DataFrame):
         fit_dfs = [fit_dfs]
@@ -121,7 +138,8 @@ def _fit_fade(fit_dfs, targets: list[str], horizons: list[int],
                     xv.append(x[m])
                     yv.append(y[m])
             if not xv:
-                coeffs[(t, h)] = (1.0, 0.0)  # no data at all -> random walk
+                # no data at all -> plain random walk on level_0
+                coeffs[(t, h)] = (1.0, 0.0)
                 continue
             x = np.concatenate(xv) if len(xv) > 1 else xv[0]
             y = np.concatenate(yv) if len(yv) > 1 else yv[0]

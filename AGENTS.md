@@ -79,7 +79,7 @@ Measured on the canonical 1970–2024 panel, 34 GB workstation:
 | `download` (default: 1-year chunks, 82-column projection) | ~1 h | a few GB |
 | `download --all-columns` in one call | — | **~100 GB; does not complete** |
 | `build --which tabular` | ~15 min | **20 GB** |
-| `baselines --which naive,fade` | ~17 min | 11 GB |
+| `baselines --which naive,fade` | ~15 min | 8.4 GB |
 | `baselines --which linear` | **7–14 h** | ~10 GB |
 | `baselines --which elasticnet` | **2–4 h** | ~10 GB |
 
