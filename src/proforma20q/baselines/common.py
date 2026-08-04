@@ -86,8 +86,8 @@ def forecast_block(meta: pd.DataFrame, values, target: str, horizon: int) -> pd.
     """One ``(target, horizon)`` block of a forecast, in the submission schema.
 
     The unit of assembly for a full-coverage submission. A complete forecast on
-    the canonical test split is 352,106 origins x 78 targets x 20 horizons =
-    **549,285,360 rows**; melting that in one call needs >20 GB before melt's own
+    the canonical test split is 352,962 origins x 78 targets x 20 horizons =
+    **550,620,720 rows**; melting that in one call needs >20 GB before melt's own
     intermediates and raises ``ArrayMemoryError``. One block is 1/1560th of it.
     """
     firm = meta[FIRM_COL].to_numpy()

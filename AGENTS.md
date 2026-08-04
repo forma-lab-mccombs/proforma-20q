@@ -85,7 +85,7 @@ Measured on the canonical 1970–2024 panel, 34 GB workstation:
 
 - `linear` is the **most** expensive baseline, not the cheapest. Do not treat
   "reproduce the baselines" as a quick check.
-- A full-coverage forecast is **549,285,360 rows**. Never assemble one as a
+- A full-coverage forecast is **550,620,720 rows**. Never assemble one as a
   single frame; use `proforma20q.schema.write_forecast_blocks`. Reading one back
   as a frame needs ~73 GB, so nothing in the CLI does: `validate` and `evaluate`
   both stream it by row-group. Measured end to end, scoring one full-scale

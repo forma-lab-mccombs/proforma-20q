@@ -10,6 +10,11 @@ results/
 # ...except the tiny SYNTHETIC example artifacts, which are safe to commit.
 !examples/*.parquet
 
+# ...and the canonical row index (grid_row, firm, origin) the Full-sample mask
+# is a bitmap over: a coverage index only, no reported figures. Shipped in-repo
+# so review needs no external download. Maintainer-approved as safe to publish.
+!artifacts/*.parquet
+
 # ...and the published canonical regularization stats: aggregate per-(feature,
 # quarter) mu/sigma/k moments (NOT firm-level data), shipped so
 # `build --reg-stats canonical` can pin the eval space to the paper. Maintainer-

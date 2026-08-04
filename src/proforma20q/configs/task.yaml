@@ -45,18 +45,22 @@ universe:
   # DEFINITION, not an enrichment step -- which is why it lives here rather than
   # only in download.py.
   #
-  # The merge attaches `permno` and keeps only firm-quarters whose datadate falls
-  # inside a valid link window. Measured effect on a 1970-2024 pull:
-  # 101,736 -> 95,538 rows (-6.1%), 595 gvkeys removed entirely. The dropped
-  # firms are systematically smaller -- ~7x by median assets (101.7 vs 703.8) and
-  # ~4.4x by median revenue (14.3 vs 63.1) -- so skipping the merge yields a
-  # LARGER, size-biased universe whose scores are not comparable to the
-  # leaderboard.
+  # The merge attaches `permno` and produces a two-regime outcome:
+  #   - firms WITH a CCM link are trimmed to their link windows (firm-quarters
+  #     with datadate outside every valid window are dropped);
+  #   - firms with NO link at all are RETAINED IN FULL, with NaN permno. On the
+  #     canonical 1970-2024 pull that is 29.0% of the panel (495,440
+  #     firm-quarters; ~50% of the 2020s), largely Canadian filers plus smaller
+  #     US firms; 34.4% of the shipped test split is unlinked.
+  # A CRSP listing is NOT a membership requirement. Skipping the merge still
+  # yields a different, larger universe (linked firms' out-of-window quarters
+  # come back) whose scores are not comparable to the leaderboard.
   #
-  # `permno` itself is never read downstream. The row filter is the point, and it
-  # is retained for comparability with the published sample.
+  # `permno` itself is never read downstream. The window trim is the point, and
+  # it is retained for comparability with the published sample.
   #
-  # CRSP entitlement is therefore REQUIRED, not optional.
+  # CRSP entitlement is therefore REQUIRED -- to reproduce the trimming of
+  # linked firms, not because the sample is CRSP-listed.
   crsp_link:
     table: "crsp.ccmxpf_lnkhist"
     linktype: [LU, LC]            # link types kept (primary / research-quality)

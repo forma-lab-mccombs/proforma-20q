@@ -391,8 +391,8 @@ def write_forecast(df: pd.DataFrame, path, *, validate: bool = True) -> None:
     metrics in regularized space) to match the Forma forecast-write contract.
 
     Needs the whole forecast in memory. A **full-coverage** submission on the
-    canonical test split is 352,106 origins x 78 targets x 20 horizons =
-    **549,285,360 rows (~4 GB on disk, >20 GB in memory)** -- use
+    canonical test split is 352,962 origins x 78 targets x 20 horizons =
+    **550,620,720 rows (~4 GB on disk, >20 GB in memory)** -- use
     :func:`write_forecast_blocks` for anything near that size.
     """
     df = normalize_columns(df)

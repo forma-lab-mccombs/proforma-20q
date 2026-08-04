@@ -35,11 +35,18 @@ Notes:
 ## How big a submission is
 
 Plan for the size before you write the file. On the canonical build the test
-split has **352,106 firm-quarters**, so **full coverage is**
+split has **352,962 firm-quarters** (the count `checksums.json` pins and the
+shipped Full-sample mask is sized to), so **full coverage is**
 
 ```
-352,106 origins × 78 targets × 20 horizons = 549,285,360 rows
+352,962 origins × 78 targets × 20 horizons = 550,620,720 rows
 ```
+
+Your own rebuild will differ slightly from this: Compustat is revised, so a
+fresh pull drifts by vintage. Measured against one real later pull: 1,330
+canonical test rows gone, 474 new, net −856 (0.24%). Treat the numbers above as
+canonical sizing figures, not as a target your build must hit — the evaluator
+scores on the common sample either way.
 
 Measured: **3.54 GB on disk** for the point track (float32 predictions; add
 ~2 GB if you carry `sigma`), and **~73 GB as a single in-memory frame** — the
@@ -55,7 +62,7 @@ iterable of submission-schema frames — typically one per `(target, horizon)` �
 validates each and appends it as a parquet row-group, so the forecast itself is
 never held in memory; what you pay for is your own model state plus a ~4M-row
 write buffer (a few hundred MB). Measured end to end, the shipped `naive` and
-`fade` baselines write their full 549,285,360-row forecasts at **11.2 GB peak**,
+`fade` baselines write their full 550,620,720-row forecasts at **11.2 GB peak**,
 nearly all of which is the tabular splits they read, not the forecast they
 write:
 
