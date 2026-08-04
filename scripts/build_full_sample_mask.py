@@ -201,7 +201,7 @@ def main(argv=None) -> int:
     # `--from-bits` exists to produce the keys form, so it implies --keys -- but not
     # when the caller asked only for the row index. Materializing keys is one row per
     # SET CELL (327M for the published mask, tens of GB in RAM); do not make someone
-    # pay that to obtain a 0.8 MB index.
+    # pay that to obtain a 1.9 MB index.
     if args.keys or (args.from_bits and not args.grid_rows):
         keys_path = out / "full_sample_mask_keys.parquet"
         mask_to_keys(mask, grid, args.truth).to_parquet(keys_path, index=False)

@@ -39,10 +39,11 @@ _LINK_CODE = re.compile(r"[A-Za-z0-9]{1,4}\Z")
 
 # Canonical Compustat query filters (configs/task.yaml -> universe).
 _COMPUSTAT_FILTERS = {"indfmt": "INDL", "datafmt": "STD", "consol": "C", "popsrc": "D"}
-# CRSP link filters. These are part of the SAMPLE DEFINITION (the merge drops
-# 6.1% of rows, and the dropped firms are ~7x smaller by median assets), so the
-# authoritative copy lives in task.yaml under `universe.crsp_link`. These
-# constants are the fallback for a task.yaml that predates that block.
+# CRSP link filters. These are part of the SAMPLE DEFINITION (linked firms are
+# trimmed to their link windows; firms with no CCM link -- 29% of the canonical
+# panel -- are retained in full with NaN permno), so the authoritative copy
+# lives in task.yaml under `universe.crsp_link`. These constants are the
+# fallback for a task.yaml that predates that block.
 _CCM_LINKTYPE = ("LU", "LC")
 _CCM_LINKPRIM = ("P", "C")
 _CCM_TABLE = "crsp.ccmxpf_lnkhist"
@@ -419,8 +420,9 @@ def download(
             print(f"Sector filter SIC [{rng['start']},{rng['end']}]: {n0} -> {len(compustat_df)}")
 
         # -- CRSP-Compustat link table --
-        # Part of the sample definition: the merge below drops ~6.1% of rows and
-        # the dropped firms are ~7x smaller by median assets. See
+        # Part of the sample definition: the merge below trims LINKED firms to
+        # their link windows, while firms with no CCM link survive in full with
+        # NaN permno (29% of the canonical panel). See
         # task.yaml -> universe.crsp_link.
         link_cfg = crsp_link_config()
         print(f"Downloading CRSP-Compustat link table ({link_cfg['table']}, "

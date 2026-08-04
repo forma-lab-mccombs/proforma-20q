@@ -9,13 +9,14 @@ ICAIF '26 paper; you then train *your* model and score a forecast file with our
 CLI. It is usable by someone who has never heard of the Forma model — build the
 data, train, submit.
 
-> **No firm-level data is distributed here.** The repository contains code,
-> configs and checksums, plus two Compustat-*derived* aggregates that carry no
-> firm-level values: the published canonical regularization statistics
-> (per-`(feature, quarter)` `mu`/`sigma`/`k` moments, in
-> `src/proforma20q/reference/`) and the Full-sample coverage bitmap (in
-> `artifacts/`). WRDS / Compustat / CRSP credentials and license are entirely the
-> user's responsibility.
+> **No firm-level data values are distributed here.** The repository contains
+> code, configs and checksums, plus three Compustat-*derived* artifacts that
+> carry no firm's reported figures: the published canonical regularization
+> statistics (per-`(feature, quarter)` `mu`/`sigma`/`k` moments, in
+> `src/proforma20q/reference/`), the Full-sample coverage bitmap, and its
+> canonical row index — a `(firm, quarter)` membership list — both in
+> `artifacts/`. WRDS / Compustat / CRSP credentials and license are entirely
+> the user's responsibility.
 
 ---
 
@@ -46,12 +47,13 @@ data, train, submit.
 Install from source — the supported path today (any modern Python 3.10+):
 
 ```bash
-# from a download or clone of this repository:
-cd proforma-20q
-pip install -e .[wrds,dev]          # scoring + baselines + WRDS client + tests
+# from the ROOT of a download or clone of this repository -- note the review
+# mirror's zip extracts its contents directly, without a wrapper directory:
+pip install -e '.[wrds,dev]'        # scoring + baselines + WRDS client + tests
 ```
 
-Use `pip install -e .[wrds]` if you only need the data build, or
+(The quotes matter under zsh, macOS's default shell, which otherwise globs the
+brackets.) Use `pip install -e '.[wrds]'` if you only need the data build, or
 `pip install -e .` for the scoring/baseline path alone (no WRDS client).
 
 > **PyPI — available once published.** On release the package will also install
@@ -76,18 +78,19 @@ access below.
 | WRDS account | all data access, via the [`wrds`](https://pypi.org/project/wrds/) client | **yes** |
 | Compustat Fundamentals Quarterly (`comp.fundq`) | the 78 statement items | **yes** |
 | Compustat `comp.co_industry` | SIC/NAICS → FF48 industry dummies, and the financial-sector exclusion | **yes** |
-| CRSP `crsp.ccmxpf_lnkhist` (CCM link table) | **defines the benchmark sample** — see [The CRSP link filter](#the-crsp-link-filter) | **yes** |
+| CRSP `crsp.ccmxpf_lnkhist` (CCM link table) | **part of the sample definition** — trims linked firms to their link windows; see [The CRSP link filter](#the-crsp-link-filter) | **yes** |
 
-> **CRSP is not optional.** The link merge removes firm-quarters outside a valid
-> link window, which is part of the published sample definition. Skipping it
-> yields a larger, systematically different universe whose scores are **not
-> comparable** to the leaderboard.
+> **CRSP is not optional.** The link merge trims *linked* firms to their link
+> windows, which is part of the published sample definition (firms with no CCM
+> link are retained in full — see [The CRSP link filter](#the-crsp-link-filter)).
+> Skipping it yields a larger, systematically different universe whose scores
+> are **not comparable** to the leaderboard.
 
 ### Step 0 — authenticate to WRDS
 
 Do this first, and verify it, before running anything else.
 
-**1. Install the client:** `pip install -e .[wrds]`
+**1. Install the client:** `pip install -e '.[wrds]'`
 
 **2. Create a `pgpass` file** so the build is non-interactive. The path is
 platform-specific — the POSIX one is not the only one:
@@ -127,7 +130,7 @@ python -c "import wrds; db = wrds.Connection(wrds_username='<user>'); print(db.r
 
 ### What you can do *without* credentials
 
-Works: `pip install -e .[dev]` and the full test suite (all synthetic, no WRDS);
+Works: `pip install -e '.[dev]'` and the full test suite (all synthetic, no WRDS);
 `proforma20q validate <file>`; `proforma20q evaluate <file> --truth
 examples/example_truth.parquet`; reading `task.yaml` / `feature_sets.yaml`;
 verifying `artifacts/full_sample_mask_bits.npy` against its manifest.
@@ -198,21 +201,32 @@ default is pinned and the build prints which space it used.
 ### The CRSP link filter
 
 `download` merges the CRSP-Compustat link table (`crsp.ccmxpf_lnkhist`,
-`linktype ∈ {LU, LC}`, `linkprim ∈ {P, C}`) and keeps only firm-quarters whose
-`datadate` falls inside a valid link window. **This is part of the sample
+`linktype ∈ {LU, LC}`, `linkprim ∈ {P, C}`). **This is part of the sample
 definition**, declared in
-[`task.yaml → universe.crsp_link`](src/proforma20q/configs/task.yaml).
+[`task.yaml → universe.crsp_link`](src/proforma20q/configs/task.yaml), and its
+outcome is a clean two-regime split:
 
-Measured on a 1970–2024 pull: **101,736 → 95,538 rows (−6.1%)**, 595 gvkeys
-removed. The dropped firms are systematically smaller — about **7× smaller by
-median assets** (101.7 vs 703.8) and **4.4× by median revenue** (14.3 vs 63.1) —
-so omitting the merge does not just add rows, it adds a size-biased tail of
-firms that the published sample never contained.
+- **Firms with a CCM link are trimmed to their link windows** — firm-quarters
+  whose `datadate` falls outside every valid window are dropped.
+- **Firms with no CCM link at all are retained in full**, with NaN `permno`.
+  This is not a corner case: on the canonical 1970–2024 pull, 16,418 of 43,335
+  firms — **495,440 firm-quarters, 29.0% of the panel** — have no link, a share
+  that grows from 3.8% in the 1970s to **50.0% in the 2020s**. They are largely
+  Canadian-incorporated filers plus smaller US firms (median `atq` 57.4 vs
+  259.3 for linked). Carried into the shipped R13 splits: 12.5% of train,
+  30.3% of val, and **34.4% of test** firm-quarters are unlinked.
 
-The column it attaches, `permno`, is **never read downstream**. The row filter is
-the point, and it is kept for comparability with the published sample. (The
-output file is named `compustat_with_permno.parquet` after the column that does
-not matter rather than the filter that does; the name is retained for
+A CRSP-listed universe is therefore **not** what this filter produces. What
+CRSP entitlement buys you is the ability to reproduce the *trimming of linked
+firms* exactly; membership itself never requires a CRSP listing. Skipping the
+merge still yields a different, larger universe than the published one (the
+out-of-window quarters of linked firms come back), so it is not optional
+either.
+
+The column it attaches, `permno`, is **never read downstream**. The window
+trim is the point, and it is kept for comparability with the published sample.
+(The output file is named `compustat_with_permno.parquet` after the column that
+does not matter rather than the filter that does; the name is retained for
 compatibility with existing pipelines.)
 
 ### If you train on the tuple view: the id maps
@@ -295,7 +309,7 @@ They anchor the leaderboard and let you verify your pipeline.
 
 | baseline     | what it is | cost at canonical scale |
 |--------------|------------|-------------------------|
-| `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. | measured: naive+fade together **17 min / 11 GB peak**, writing two 549,285,360-row forecasts (3.5 GB each) |
+| `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. | measured: naive+fade together **17 min / 11 GB peak**, writing two full-coverage 550,620,720-row forecasts (~3.5 GB each) |
 | `fade`       | pooled AR(1) / fade-to-mean — one `(ρ_h, b_h)` per horizon, pooled across items and firms. | ″ |
 | `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. | **hours.** Measured one refit at canonical train size (578,831 × 985): 5.3 s at h=1, 1.8 s at h=20 → ~1–2 h for the 1,560 refits, plus ~1 h for the 840-fit CV grid (42 combos × 20 horizons) |
 | `linear`     | plain OLS per (target, horizon). | **the most expensive of the four, not the cheapest.** Measured one fit at canonical train size: 32.5 s at h=1, 15.2 s at h=20 → **7–14 h** for 1,560 fits. OLS solves by SVD; coordinate descent with an L1 penalty is ~6× faster here |
@@ -429,14 +443,15 @@ your vintage**:
 [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
 so the command above needs no download — *if* your `tabular_test` is
 row-identical to the canonical one. It will not be: Compustat is revised, so a
-fresh pull drifts. **Pass the published canonical row index alongside it and the
-bitmap works anyway:**
+fresh pull drifts. **Pass the canonical row index alongside it and the
+bitmap works anyway** — the index ships in this repository too
+([`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet),
+1.9 MB), so this route needs no download either:
 
 ```bash
-python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # 0.8 MB
 proforma20q evaluate my_forecasts.parquet --against baselines \
     --sample-mask artifacts/full_sample_mask_bits.npy \
-    --grid-rows data/artifacts/full_sample_grid_rows.parquet
+    --grid-rows artifacts/full_sample_grid_rows.parquet
 ```
 
 `--grid-rows` names which `(firm, origin)` row each bit belongs to, so `evaluate`
@@ -487,22 +502,25 @@ coverage limits.
 
 ## Data & artifacts
 
-**No firm-level WRDS-derived data is distributed** — you rebuild the
+**No firm-level WRDS-derived *values* are distributed** — you rebuild the
 tabular/tuple artifacts yourself from your own Compustat licence
-(`proforma20q build`). Two Compustat-derived *aggregates* do ship, because
-neither can reveal a firm's values and both are needed to reproduce the paper:
+(`proforma20q build`). Three Compustat-derived artifacts do ship — two
+*aggregates* and a *coverage index* — because none of them can reveal any
+firm's reported figures and all are needed to reproduce the paper:
 
 | artifact | what it is | why it is safe |
 |---|---|---|
 | `src/proforma20q/reference/regularization_stats__*.parquet` | per-`(feature, quarter)` `mu` / `sigma` / `k` | cross-sectional moments over thousands of firms; used by `--reg-stats canonical` to pin the target space |
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | a coverage bitmap | one bit per grid cell, no identifiers and no values |
+| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | the canonical row index the mask is a bitmap over | says only *which* `(firm, quarter)` pairs are in the test split — membership, never a reported figure |
 
-The **Full-sample mask ships in this repository** — it holds only a coverage
-bitmap, no firm-level values:
+The **Full-sample mask and its row index ship in this repository** — a
+coverage bitmap plus the row labels it counts through, no firm-level values:
 
 | artifact | size | md5 | for |
 |---|---|---|---|
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
+| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | 1.9 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). A byte-identical copy sits in the archival deposit; **this in-repo copy is the one to use.** |
 
 The remaining artifacts are deposited at
 **[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**
@@ -526,7 +544,11 @@ absolute-error track):
 | `ffnn_large_b50__pf_full__test__predictions.parquet` | 4.5 GB | `915779a3…` | **FFNN (large)** 5-seed mixture — Panel A comparator row. |
 | `forma_lap05_fgrid__pf_full__test__predictions.parquet` | 7.4 GB | `1e8b0415…` | canonical R13 **Forma** Laplace mixture (absolute-error track) — the **Panel B** Full column. |
 | `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
-| `full_sample_grid_rows.parquet` | 0.8 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). |
+
+The deposit also carries byte-identical copies of the in-repo mask and row
+index (same md5s as the table above), so the archival record is complete on its
+own — but nothing in this README requires downloading them: the in-repo copies
+are canonical.
 
 > **Joining these files to your own build:** `origin`/`quarter` in the forecasts
 > is a quarter-*end* timestamp at **microsecond** precision, while a canonical

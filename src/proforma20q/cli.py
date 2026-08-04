@@ -7,9 +7,10 @@
     proforma20q validate  my_forecasts.parquet        # submission-schema check
     proforma20q report-drift                          # vintage divergence vs canonical checksums
 
-No firm-level WRDS-derived data ships with the package (the bundled canonical
-regularization statistics are aggregate per-(feature, quarter) moments); a build
-needs the user's own WRDS credentials (see README).
+No firm-level WRDS-derived values ship with the package (the bundled canonical
+regularization statistics are aggregate per-(feature, quarter) moments, and the
+bundled mask/row index carry coverage only); a build needs the user's own WRDS
+credentials (see README).
 """
 from __future__ import annotations
 

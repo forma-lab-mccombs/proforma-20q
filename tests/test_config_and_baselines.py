@@ -26,10 +26,10 @@ def test_task_config_matches_paper():
 
 
 def test_crsp_link_filter_is_declared_in_the_task_definition():
-    """The CCM link merge drops 6.1% of rows and the dropped firms are ~7x
-    smaller by median assets -- it is part of the sample definition, so it has to
-    live in the file the README calls the single source of truth, not only as
-    module constants in download.py."""
+    """The CCM link merge trims linked firms to their link windows (firms with
+    no link are retained in full) -- it is part of the sample definition, so it
+    has to live in the file the README calls the single source of truth, not
+    only as module constants in download.py."""
     from proforma20q.download import _CCM_LINKPRIM, _CCM_LINKTYPE, crsp_link_config
 
     block = load_task_config()["universe"]["crsp_link"]

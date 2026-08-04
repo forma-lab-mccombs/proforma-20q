@@ -24,19 +24,21 @@ classifiers = [
 ]
 
 # Runtime deps are kept deliberately loose so the scoring/baseline path installs
-# on any modern scientific-Python stack. For a BIT-EXACT canonical rebuild (whose
-# md5s match the published checksums) install the pinned lockfile instead:
+# on any modern scientific-Python stack -- upper bounds only at the next major,
+# matching the companion repo's convention (the suite passes under both pandas 2
+# and pandas 3). For a BIT-EXACT canonical rebuild (whose md5s match the
+# published checksums) install the pinned lockfile instead:
 #     pip install -r requirements-lock.txt
 # See README "Reproducing the canonical build".
 dependencies = [
-    "numpy",
-    "pandas",
-    "scipy>=1.10",
-    "scikit-learn>=1.3",
-    "fastparquet",
-    "pyyaml",
-    "joblib",
-    "tqdm",
+    "numpy<3",
+    "pandas>=2,<4",
+    "scipy>=1.10,<2",
+    "scikit-learn>=1.3,<2",
+    "fastparquet>=2024.2",
+    "pyyaml>=6,<7",
+    "joblib>=1,<2",
+    "tqdm>=4.60",
 ]
 
 [project.optional-dependencies]

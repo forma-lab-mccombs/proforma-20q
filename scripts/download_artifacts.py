@@ -5,9 +5,10 @@ The artifacts are deposited at https://doi.org/10.5281/zenodo.21269003 (CC BY
 substituted download fails loudly rather than scoring silently against the
 wrong bytes.
 
-Nothing WRDS-derived is released. The public artifacts are model OUTPUTS and a
-coverage mask (no firm-level Compustat values) -- one file per point-track
-exhibit of Table 1, plus the density-family sidecar and the mask:
+No firm-level WRDS-derived VALUES are released. The public artifacts are model
+OUTPUTS and a coverage mask/index (no firm-level Compustat figures) -- one file
+per point-track exhibit of Table 1, plus the density-family sidecar, the mask,
+and its row index:
 
 * ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13
   Forma 5-seed Gaussian mixture forecast (squared-error track). Pool your
@@ -29,10 +30,11 @@ exhibit of Table 1, plus the density-family sidecar and the mask:
 * ``full_sample_grid_rows.parquet`` -- the canonical row index (``grid_row,
   firm, origin``) the mask is a bitmap over. Pass alongside the mask as
   ``evaluate --grid-rows`` and the bitmap applies to a vintage-drifted rebuild,
-  matched by ``(firm, origin)`` value. Only 0.8 MB, and it is what keeps
+  matched by ``(firm, origin)`` value. Only 1.9 MB, and it is what keeps
   reproducing the paper's sample from costing a 3.7 GB forecast download; it
   cannot be derived from the forecast, which omits 23,970 canonical rows it
-  never forecast.
+  never forecast. Also ships in-repo under ``artifacts/`` -- use that copy;
+  this download exists to verify the archival deposit.
 
 The density track (Panel C -- exact mixture NLL/CRPS over the per-seed
 forecasts) is out of scope for this release; issue #3 tracks it.
