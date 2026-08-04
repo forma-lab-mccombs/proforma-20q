@@ -7,10 +7,11 @@ from ..schema import FIRM_COL, ORIGIN_COL, write_forecast_blocks
 from .common import (discover_targets, feature_columns, load_tabular, tabular_columns,
                      target_columns)
 
-# What each baseline actually reads. `naive` needs only the origin-quarter level;
-# `fade` adds the future-target columns; the linear family needs the whole
-# feature matrix. Reading a split in full costs ~6 GB, so the difference decides
-# whether `baselines --which naive,fade` runs on an ordinary machine.
+# What each baseline actually reads. `naive` needs the four seasonal-alignment
+# levels (`level_0..3`); `fade` needs `level_0` plus the future-target columns;
+# the linear family needs the whole feature matrix. Reading a split in full
+# costs ~6 GB, so the difference decides whether `baselines --which naive,fade`
+# runs on an ordinary machine.
 _NEEDS_FIT_SPLITS = {"fade", "elasticnet", "linear"}
 
 
@@ -24,8 +25,15 @@ def _resolve_split_paths(processed_dir, suffix) -> dict[str, Path]:
 
 def _columns_for(which, cols, targets) -> list[str]:
     """Union of the columns the requested baselines read."""
+    from .naive import N_LEVEL_LAGS
+
+    cols_set = set(cols)
     need = {FIRM_COL, ORIGIN_COL}
-    need |= {f"{t}_level_0" for t in targets if f"{t}_level_0" in set(cols)}
+    need |= {f"{t}_level_0" for t in targets if f"{t}_level_0" in cols_set}
+    if "naive" in which:
+        # seasonal random walk: h=1 <- level_3, h=2 <- level_2, ...
+        need |= {f"{t}_level_{lag}" for t in targets for lag in range(N_LEVEL_LAGS)
+                 if f"{t}_level_{lag}" in cols_set}
     if any(n != "naive" for n in which):
         need |= set(target_columns(cols, targets))
     if any(n in ("elasticnet", "linear") for n in which):

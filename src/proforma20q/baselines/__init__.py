@@ -3,9 +3,9 @@
 Cheap to run, they let a user confirm their pipeline reproduces the published
 baseline numbers before scoring their own model. They are NOT the Forma model.
 
-* ``naive``      random walk (change-space zero anchor)
-* ``fade``       pooled AR(1) / fade-to-mean
-* ``elasticnet`` per-horizon CV'd ElasticNet, shared across targets
+* ``naive``      seasonal random walk (same-fiscal-quarter base)
+* ``fade``       AR(1) / fade-to-mean, one fit per (item, horizon)
+* ``elasticnet`` per-(item, horizon) ElasticNet, hyperparams CV'd per horizon
 * ``linear``     plain OLS
 
 Each returns a forecast in the submission schema. Use :func:`run_baseline` for a
