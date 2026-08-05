@@ -1136,16 +1136,23 @@ def verify_id_maps(processed_dir, suffix: str, reference_dir=None, *,
 
     Account and industry ids are embedding indices: a build whose ordering
     differs from the canonical one silently permutes any embedding matrix
-    trained under it, so those two maps must match the reference EXACTLY (ids
-    and names). The firm map's gvkey universe legitimately drifts with the WRDS
-    vintage; it is checked for the ordering rule instead (ids ``0..n-1``
-    assigned by sorted gvkey) plus a bounded count delta.
+    trained under it, so those two maps must match the pinned canonical
+    reference EXACTLY (ids and names). They are **always** compared against the
+    packaged CSVs under ``reference/`` -- the pins are data-independent, so
+    there is no vintage under which they don't apply, and comparing against a
+    trusted-build's maps instead could only weaken the check (a permuted
+    reference build would agree with an identically permuted rebuild, which is
+    precisely the failure this exists to catch).
 
-    ``reference_dir`` compares against a build you already trust (the
-    ``--reference`` route); the default is the packaged canonical reference
-    CSVs under ``reference/``. Returns ``None`` when the build wrote no id maps
-    at all (a tabular-only build has none and does not need them), otherwise a
-    per-map report plus an overall ``"_ok"``.
+    The firm map's gvkey universe legitimately drifts with the WRDS vintage; it
+    is checked for the ordering rule instead (ids ``0..n-1`` assigned by sorted
+    gvkey) plus a bounded count delta. ``reference_dir`` (the ``--reference``
+    route) applies to the firm map only, where a vintage-local reference
+    genuinely is the better comparand than the canonical count.
+
+    Returns ``None`` when the build wrote no id maps at all (a tabular-only
+    build has none and does not need them), otherwise a per-map report plus an
+    overall ``"_ok"``.
     """
     from .config import canonical_id_map_path
 
@@ -1156,10 +1163,7 @@ def verify_id_maps(processed_dir, suffix: str, reference_dir=None, *,
     ok = True
 
     def _reference(name: str) -> pd.DataFrame | None:
-        if reference_dir is not None:
-            p = Path(reference_dir) / f"{name}__{suffix}.csv"
-        else:
-            p = canonical_id_map_path(name)
+        p = canonical_id_map_path(name)
         return pd.read_csv(p) if p.exists() else None
 
     for name, id_col, name_col in (("account_id_map", "account_id", "account_name"),
@@ -1219,6 +1223,36 @@ def verify_id_maps(processed_dir, suffix: str, reference_dir=None, *,
 
     report["_ok"] = ok
     return report
+
+
+def id_map_log_lines(id_check: dict) -> list[str]:
+    """Human-readable summary of a :func:`verify_id_maps` report for the build
+    log. Split out of ``build`` so the branch is unit-testable: every failure
+    mode ``verify_id_maps`` can report must produce output -- a ~50-minute
+    build ending silently on a state ``report-drift`` would FAIL is the exact
+    alarming-silence problem the end-of-build messaging exists to prevent.
+    """
+    statuses = {n: id_check[n]["status"]
+                for n in ("account_id_map", "industry_id_map", "firm_id_map")}
+    if id_check["_ok"]:
+        f = id_check["firm_id_map"]
+        if all(s == "ok" for s in statuses.values()):
+            return ["  id maps: account/industry orderings match the pinned "
+                    "canonical reference; firm map "
+                    f"ordering rule ok ({f['n_firms']:,} firms)"]
+        skipped = sorted(n for n, s in statuses.items() if s == "no_reference")
+        return ["  id maps: ordering rule ok; no pinned canonical reference for "
+                f"this suffix to compare {', '.join(skipped)} against"]
+    bad = ", ".join(f"{n}: {s}" for n, s in statuses.items()
+                    if s not in ("ok", "no_reference"))
+    return [
+        f"  *** WARNING: id-map check FAILED ({bad}).",
+        "  *** account/industry ids are embedding indices -- a differing ordering "
+        "silently permutes",
+        "  *** any embedding trained under it; firm ids must stay sorted-gvkey "
+        "contiguous. Run",
+        "  *** `proforma20q report-drift` for detail.",
+    ]
 
 
 def _year_to_max_q(year: int) -> int:
@@ -1350,15 +1384,8 @@ def build(
             f"{n_ind} industries (incl. the unknown reference level)")
         id_check = verify_id_maps(out_dir, suffix)
         if id_check is not None:
-            acct, ind = id_check["account_id_map"], id_check["industry_id_map"]
-            if acct["status"] == "ok" and ind["status"] == "ok":
-                log("  id maps: account/industry orderings match the pinned "
-                    "canonical reference")
-            elif "mismatch" in (acct["status"], ind["status"]):
-                log("  *** WARNING: account/industry id-map ordering DIFFERS from "
-                    "the pinned canonical\n  *** reference -- an embedding trained "
-                    "under these ids is silently permuted relative\n  *** to the "
-                    "canonical ordering. See `proforma20q report-drift`.")
+            for line in id_map_log_lines(id_check):
+                log(line)
         tr, va, te = split_tuple(tup, splits["train_end_year"], splits["val_end_year"],
                                  pre_quarters=fe["recent_levels"] + fe["yoy_changes"] - 1)
         for name, part in (("train", tr), ("val", va), ("test", te)):

@@ -164,11 +164,14 @@ def write_checksums(
     *,
     download_date: str | None = None,
     task_version: str | None = None,
+    column_stats_source: str | None = None,
 ) -> Path:
     """(Maintainer) Populate ``checksums.json`` from the canonical build.
 
-    ``download_date`` (the WRDS pull date, ISO ``YYYY-MM-DD``) and
-    ``task_version`` are recorded alongside the hashes; when omitted they are
+    ``download_date`` (the WRDS pull date, ISO ``YYYY-MM-DD``),
+    ``task_version`` and ``column_stats_source`` (free-text provenance of the
+    per-column statistics, e.g. which build produced them and how it relates to
+    the canonical one) are recorded alongside the hashes; when omitted they are
     carried forward from the existing ``checksums.json`` so a re-run preserves
     them. Only hashes and aggregate per-column statistics are written -- never
     any firm-level value.
@@ -183,6 +186,7 @@ def write_checksums(
     core = compute_checksums(processed_dir, suffix)
     resolved_dl = download_date if download_date is not None else prior.get("download_date")
     resolved_tv = task_version or prior.get("task_version")
+    resolved_src = column_stats_source or prior.get("_column_stats_source")
     if resolved_dl is None or resolved_tv is None:
         print(f"  Warning: writing checksums with download_date={resolved_dl!r}, "
               f"task_version={resolved_tv!r} (no value passed and none in {out_path.name}).")
@@ -193,6 +197,8 @@ def write_checksums(
         "download_date": resolved_dl,
         "artifacts": core["artifacts"],
     }
+    if resolved_src is not None:
+        record["_column_stats_source"] = resolved_src
     out_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return out_path
 
@@ -404,6 +410,10 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
             "position-sensitive). Only the row-count delta below is meaningful. "
             "Compare against a reference build with `--reference <dir>`, or ask "
             "the maintainer to republish checksums.json with column_stats.")
+    if have_stats and published.get("_column_stats_source"):
+        # surface the provenance of the reference statistics next to the verdict
+        # they decide, rather than leaving it discoverable only inside the JSON
+        report["_column_stats_source"] = published["_column_stats_source"]
     id_ok = id_rep["_ok"] if id_rep is not None else True
     if (verdicts and not all(verdicts)) or not id_ok:
         # a missing artifact or a permuted/missing id map is a failure whether

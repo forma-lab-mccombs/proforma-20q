@@ -403,7 +403,17 @@ bit-identical to the canonical snapshot.
    md5s plus, per tabular artifact, the row/column counts and a **per-column
    distribution summary** (coverage, mean, sd, p05/p50/p95 of the regularized
    values). Six aggregate scalars over a 600,000-row column reveal nothing
-   firm-level — and unlike a hash, they are *comparable*.
+   firm-level — and unlike a hash, they are *comparable*. This is a deliberate,
+   maintainer-approved exception to the no-WRDS-values rule, recorded in
+   `NOTICE` alongside the regularization statistics and the mask. Provenance:
+   the md5 pins are the canonical build's own; the distribution summary was
+   computed from the canonical R13 research artifacts — the *internal* builder's
+   output off the same panel, row-count-identical to the pins and measured to
+   agree with this package's builder at worst |Δmean| 1e-06 (see the
+   calibration below). The statistics are order-invariant, so the two builders'
+   differing row order cannot affect them; the exact recipe is
+   `scripts/merge_canonical_column_stats.py` and the file records its own
+   provenance in `_column_stats_source`, which `report-drift` echoes.
 5. **Check drift, with a verdict.**
    ```bash
    proforma20q report-drift                       # vs the published statistics

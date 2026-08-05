@@ -309,7 +309,7 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
             print("  [FAIL] firm_id_map: not found in the build")
         else:
             verdict = "PASS" if f["status"] == "ok" else "FAIL"
-            if f["n_reference"] is not None:
+            if f["delta_frac"] is not None:
                 vs_ref = (f"vs {f['n_reference']:,} reference "
                           f"({f['delta_frac']:.3%} delta; gvkey universe drifts "
                           f"by vintage, ids must be re-mapped via gvkey strings, "
@@ -320,6 +320,8 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
                   f"ordering rule (sorted gvkeys, ids 0..n-1): "
                   f"{'ok' if f['ordering_rule_ok'] else 'VIOLATED'}")
 
+    if rep.get("_column_stats_source"):
+        print(f"\n  reference statistics provenance: {rep['_column_stats_source']}")
     if rep.get("_note"):
         print(f"\n  NOTE: {rep['_note']}")
     if rep.get("_pass") is None:

@@ -92,6 +92,28 @@ def test_download_date_preserved_on_rerun(tmp_path):
     assert rec["task_version"] == "r13"
 
 
+def test_column_stats_source_preserved_on_rerun(tmp_path):
+    """The provenance note survives a re-run, like download_date/task_version --
+    otherwise a routine repopulation silently destroys the only audit trail for
+    statistics whose source build no longer exists."""
+    proc = tmp_path / "processed"
+    proc.mkdir()
+    _make_processed(proc)
+    out = tmp_path / "checksums.json"
+
+    write_checksums(proc, SUFFIX, out_path=out, download_date="2026-07-02",
+                    task_version="r13", column_stats_source="computed from X")
+    assert json.loads(out.read_text(encoding="utf-8"))[
+        "_column_stats_source"] == "computed from X"
+    write_checksums(proc, SUFFIX, out_path=out)  # nothing passed
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["_column_stats_source"] == "computed from X"
+    # and report_drift surfaces it next to the verdict it decides
+    from proforma20q.checksums import report_drift
+    rep = report_drift(proc, SUFFIX, published=rec)
+    assert rep["_column_stats_source"] == "computed from X"
+
+
 def test_drift_empty_processed_reports_all_missing(tmp_path):
     """No build at all: report_drift must surface every published artifact as
     'missing' rather than returning an empty (green-looking) report."""

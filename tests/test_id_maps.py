@@ -133,7 +133,8 @@ def test_verify_fails_when_the_firm_universe_drifts_too_far(tmp_path):
 
 
 def test_verify_against_a_reference_dir(tmp_path):
-    """`--reference <dir>`: compare two builds' maps directly."""
+    """`--reference <dir>` scopes to the FIRM map only: its gvkey universe is
+    vintage-local, so a trusted build's count is the better comparand there."""
     ref = tmp_path / "ref"
     ref.mkdir()
     write_id_maps(ref, SUFFIX, {"000001": 0, "000002": 1}, canonical_account_id_map())
@@ -143,6 +144,79 @@ def test_verify_against_a_reference_dir(tmp_path):
     rep = verify_id_maps(same, SUFFIX, reference_dir=ref)
     assert rep["_ok"] is True                       # same count, rule holds
     assert rep["firm_id_map"]["n_reference"] == 2
+
+
+def test_reference_dir_cannot_weaken_the_account_check(tmp_path):
+    """Account/industry are ALWAYS compared against the pinned canonical CSVs,
+    even under `--reference`. The pins are data-independent -- there is no
+    vintage under which they don't apply -- and comparing against a reference
+    build's own maps instead would let a permuted reference build agree with an
+    identically permuted rebuild: the exact silent failure the pins exist to
+    catch."""
+    amap = canonical_account_id_map()
+    permuted = {a: i for i, a in enumerate(sorted(a for a in amap if a != "scale"))}
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    write_id_maps(ref, SUFFIX, {"000001": 0}, permuted)     # permuted reference...
+    rebuild = tmp_path / "rebuild"
+    rebuild.mkdir()
+    write_id_maps(rebuild, SUFFIX, {"000001": 0}, permuted)  # ...agrees with rebuild
+    rep = verify_id_maps(rebuild, SUFFIX, reference_dir=ref)
+    assert rep["account_id_map"]["status"] == "mismatch"
+    assert rep["_ok"] is False
+
+
+def test_no_reference_is_reported_but_not_a_failure(tmp_path, monkeypatch):
+    """A feature set with no pinned maps: nothing to compare is not a FAIL."""
+    import proforma20q.config as config
+    write_id_maps(tmp_path, SUFFIX, _canonical_firm_map(), canonical_account_id_map())
+    monkeypatch.setattr(config, "REFERENCE_DIR", tmp_path / "empty")
+    rep = verify_id_maps(tmp_path, SUFFIX)
+    assert rep["account_id_map"]["status"] == "no_reference"
+    assert rep["industry_id_map"]["status"] == "no_reference"
+    assert rep["_ok"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The build's end-of-run id-map lines
+# --------------------------------------------------------------------------- #
+def test_every_id_map_failure_mode_produces_build_output(tmp_path):
+    """A build must never end silently on a state report-drift would FAIL --
+    every not-ok verify_id_maps report has to yield a WARNING line."""
+    from proforma20q.build import id_map_log_lines
+
+    # all ok -> a single confirmation line naming the firm count
+    write_id_maps(tmp_path, SUFFIX, _canonical_firm_map(), canonical_account_id_map())
+    lines = id_map_log_lines(verify_id_maps(tmp_path, SUFFIX))
+    assert len(lines) == 1 and "match the pinned canonical reference" in lines[0]
+    assert f"{CANONICAL_N_FIRMS:,}" in lines[0]
+
+    # firm-map drift beyond tolerance (account/industry still fine) -> WARNING
+    shrunk = {f"{i:06d}": i for i in range(int(CANONICAL_N_FIRMS * 0.9))}
+    write_id_maps(tmp_path, SUFFIX, shrunk, canonical_account_id_map())
+    lines = id_map_log_lines(verify_id_maps(tmp_path, SUFFIX))
+    assert any("WARNING" in ln for ln in lines)
+    assert any("firm_id_map: drift_exceeded" in ln for ln in lines)
+
+    # permuted account map -> WARNING naming the map
+    amap = canonical_account_id_map()
+    permuted = {a: i for i, a in enumerate(sorted(a for a in amap if a != "scale"))}
+    write_id_maps(tmp_path, SUFFIX, _canonical_firm_map(), permuted)
+    lines = id_map_log_lines(verify_id_maps(tmp_path, SUFFIX))
+    assert any("WARNING" in ln for ln in lines)
+    assert any("account_id_map: mismatch" in ln for ln in lines)
+
+
+def test_no_reference_build_output_says_so(tmp_path, monkeypatch):
+    from proforma20q.build import id_map_log_lines
+    import proforma20q.config as config
+
+    write_id_maps(tmp_path, SUFFIX, _canonical_firm_map(), canonical_account_id_map())
+    monkeypatch.setattr(config, "REFERENCE_DIR", tmp_path / "empty")
+    lines = id_map_log_lines(verify_id_maps(tmp_path, SUFFIX))
+    assert len(lines) == 1
+    assert "no pinned canonical reference" in lines[0]
+    assert "ordering rule ok" in lines[0]
 
 
 # --------------------------------------------------------------------------- #

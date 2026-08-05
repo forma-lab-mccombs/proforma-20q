@@ -11,6 +11,9 @@ from the Kenneth R. French Data Library.
 NO WRDS-DERIVED FIRM-LEVEL VALUES ARE DISTRIBUTED. The package does ship the
 published canonical regularization statistics (aggregate per-(feature, quarter)
 mu/sigma/k moments derived from Compustat, in src/proforma20q/reference/), the
-Full-sample coverage bitmap, and its row index -- a (firm, quarter) membership
-list that reveals no reported figures (artifacts/). WRDS / Compustat / CRSP
-credentials and license are the user's responsibility; see README.md.
+per-column drift-check statistics (six aggregate moments -- coverage, mean, sd,
+p05/p50/p95 -- per regularized column of >= 211k rows, in
+src/proforma20q/checksums.json), the Full-sample coverage bitmap, and its row
+index -- a (firm, quarter) membership list that reveals no reported figures
+(artifacts/). WRDS / Compustat / CRSP credentials and license are the user's
+responsibility; see README.md.
