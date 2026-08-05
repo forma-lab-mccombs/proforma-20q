@@ -32,6 +32,19 @@ def canonical_reg_stats_path(tag: str = CANONICAL_TAG) -> Path:
     return REFERENCE_DIR / f"regularization_stats__{fs}__{tag}.parquet"
 
 
+def canonical_id_map_path(name: str, tag: str = CANONICAL_TAG) -> Path:
+    """Path to a pinned canonical id-map CSV (``account_id_map`` /
+    ``industry_id_map``).
+
+    These pin the tuple view's embedding orderings (see
+    ``build.verify_id_maps``). There is deliberately no canonical
+    ``firm_id_map`` here: the gvkey universe drifts with the Compustat vintage,
+    so the firm map is checked by ordering rule and count instead.
+    """
+    fs = load_task_config()["benchmark"]["feature_set"]
+    return REFERENCE_DIR / f"{name}__{fs}__{tag}.csv"
+
+
 @lru_cache(maxsize=None)
 def load_task_config() -> dict[str, Any]:
     """The canonical ProForma-20Q task definition (``configs/task.yaml``)."""

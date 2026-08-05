@@ -21,6 +21,12 @@ results/
 # approved as safe to publish.
 !src/proforma20q/reference/*.parquet
 
+# ...and the pinned canonical id maps (account/industry embedding orderings):
+# derived entirely from the in-repo task config and FF48 table -- item names and
+# integer ids, no WRDS data of any kind. The firm map is NOT pinned (its gvkey
+# universe is vintage-dependent WRDS-derived membership).
+!src/proforma20q/reference/*.csv
+
 # WRDS credentials must never be committed.
 .pgpass
 *.pgpass

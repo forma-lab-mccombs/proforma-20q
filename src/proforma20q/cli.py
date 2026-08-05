@@ -224,6 +224,14 @@ def _print_verify(processed_dir, suffix) -> None:
             continue
         print(f"  {r.get('status', '?'):>9}  {name}")
     print(f"  ALL MATCH: {rep['all_match']}")
+    if not rep["all_match"]:
+        # Expected on any fresh WRDS pull (Compustat is revised; see README).
+        # Without this pointer, the last thing a ~50-minute build prints is a
+        # wall of "mismatch" with no verdict.
+        print("  NOTE: md5 mismatches are EXPECTED on a fresh WRDS pull -- "
+              "Compustat is revised, so\n  bit-exact equality with the canonical "
+              "snapshot is not achievable and not the target.\n  Run "
+              "`proforma20q report-drift` for the calibrated PASS/FAIL verdict.")
 
 
 def _print_drift(processed_dir, suffix, reference=None) -> int:
@@ -276,6 +284,41 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
                   f"rows {r.get('row_count_delta', 0):+,}")
         else:
             print(f"  {name}: file md5 match={r.get('file_md5_match')}")
+
+    idm = rep.get("_id_maps")
+    if idm:
+        print("\n  --- id maps (tuple-view embedding orderings) ---")
+        for name in ("account_id_map", "industry_id_map"):
+            r = idm[name]
+            if r["status"] == "ok":
+                print(f"  [PASS] {name}: {r['n']} entries match the pinned "
+                      f"canonical reference exactly")
+            elif r["status"] == "no_reference":
+                print(f"  {name}: no pinned reference for this suffix (skipped)")
+            elif r["status"] == "missing":
+                print(f"  [FAIL] {name}: not found in the build")
+            else:
+                print(f"  [FAIL] {name}: DIFFERS from the pinned canonical "
+                      f"reference ({r['n_built']} vs {r['n_reference']} entries) "
+                      f"-- an embedding trained under this map is permuted "
+                      f"relative to the canonical ordering")
+                for d in r.get("first_diffs", []):
+                    print(f"      {d}")
+        f = idm["firm_id_map"]
+        if f["status"] == "missing":
+            print("  [FAIL] firm_id_map: not found in the build")
+        else:
+            verdict = "PASS" if f["status"] == "ok" else "FAIL"
+            if f["n_reference"] is not None:
+                vs_ref = (f"vs {f['n_reference']:,} reference "
+                          f"({f['delta_frac']:.3%} delta; gvkey universe drifts "
+                          f"by vintage, ids must be re-mapped via gvkey strings, "
+                          f"never assumed positionally)")
+            else:
+                vs_ref = "(no reference count to compare)"
+            print(f"  [{verdict}] firm_id_map: {f['n_firms']:,} firms {vs_ref}; "
+                  f"ordering rule (sorted gvkeys, ids 0..n-1): "
+                  f"{'ok' if f['ordering_rule_ok'] else 'VIOLATED'}")
 
     if rep.get("_note"):
         print(f"\n  NOTE: {rep['_note']}")
