@@ -190,6 +190,13 @@ def write_checksums(
     if resolved_dl is None or resolved_tv is None:
         print(f"  Warning: writing checksums with download_date={resolved_dl!r}, "
               f"task_version={resolved_tv!r} (no value passed and none in {out_path.name}).")
+    if column_stats_source is None and resolved_src is not None:
+        # Unlike a stale download_date (inert metadata), a stale provenance note
+        # is printed by report-drift as the stated source of statistics it may
+        # no longer describe -- exactly when the stats were just recomputed from
+        # a different build.
+        print(f"  Warning: carrying forward _column_stats_source from {out_path.name}; "
+              f"pass column_stats_source= if these statistics came from this build.")
     record = {
         "_status": "populated",
         "task_version": resolved_tv,

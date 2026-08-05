@@ -92,10 +92,14 @@ def test_download_date_preserved_on_rerun(tmp_path):
     assert rec["task_version"] == "r13"
 
 
-def test_column_stats_source_preserved_on_rerun(tmp_path):
+def test_column_stats_source_preserved_on_rerun(tmp_path, capsys):
     """The provenance note survives a re-run, like download_date/task_version --
     otherwise a routine repopulation silently destroys the only audit trail for
-    statistics whose source build no longer exists."""
+    statistics whose source build no longer exists. But the carry-forward must
+    WARN: the note is user-facing report-drift output, so silently keeping it
+    across a re-run that just recomputed the stats from a different build would
+    print stale provenance as the stated source of statistics it no longer
+    describes."""
     proc = tmp_path / "processed"
     proc.mkdir()
     _make_processed(proc)
@@ -105,9 +109,11 @@ def test_column_stats_source_preserved_on_rerun(tmp_path):
                     task_version="r13", column_stats_source="computed from X")
     assert json.loads(out.read_text(encoding="utf-8"))[
         "_column_stats_source"] == "computed from X"
+    assert "carrying forward" not in capsys.readouterr().out  # explicit note: quiet
     write_checksums(proc, SUFFIX, out_path=out)  # nothing passed
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["_column_stats_source"] == "computed from X"
+    assert "carrying forward _column_stats_source" in capsys.readouterr().out
     # and report_drift surfaces it next to the verdict it decides
     from proforma20q.checksums import report_drift
     rep = report_drift(proc, SUFFIX, published=rec)
