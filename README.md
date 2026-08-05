@@ -148,8 +148,18 @@ real artifact, any leaderboard number, `report-drift`, and `evaluate
 ```bash
 proforma20q build --wrds-user <your_wrds_user>
 # -> authenticates ONCE (see Step 0; expect a Duo push)
-# -> downloads Compustat+CRSP, processes both views, reports drift
+# -> downloads Compustat+CRSP, processes both views, verifies checksums
+proforma20q report-drift
+# -> the PASS/FAIL vintage-drift verdict (see "Reproducing the canonical build")
 ```
+
+The build ends with a **bit-exact md5 verification**, and on any fresh WRDS
+pull it will print `mismatch` for every artifact and `ALL MATCH: False`. That
+is expected — Compustat is revised, so bit-exact equality with the canonical
+snapshot is not achievable ([details](#reproducing-the-canonical-build)). The
+check with a real verdict is the second command: `report-drift` compares
+per-column distribution statistics against the published canonical ones and
+returns PASS/FAIL. (`build --report-drift` runs it in one step.)
 
 This writes the tabular and tuple artifacts to `data/processed/`. The
 **tabular test file is also the evaluation ground truth** — there is no separate
@@ -246,10 +256,29 @@ than a bare `read_csv`: `firm_id` is a **zero-padded** gvkey, and CSV has no
 types, so a default read turns `"001045"` into the integer `1045` — which then
 matches nothing in the truth file, silently.
 
+**The account map has 79 entries, not 78.** The tuple view carries the size
+deflator `scale` as an account (id **60**, between `revtq` = 59 and
+`seqq` = 61) so a tuple-trained model can denormalize; the 18 items sorting
+after `"scale"` therefore sit one id higher than a bare-78-item enumeration
+would put them. Submissions still use only the 78 pf_full item *names* —
+`scale` is never a forecast target.
+
 These files also pin the ordering rule (ids are assigned by `sorted()`), which
 matters because account and industry ids are embedding indices: a build whose
 ordering differs from the one a checkpoint was trained under permutes its
-embeddings without any error.
+embeddings without any error. **The canonical account and industry maps
+therefore ship in this repository** —
+[`src/proforma20q/reference/account_id_map__<suffix>.csv`](src/proforma20q/reference)
+(79 rows) and `industry_id_map__<suffix>.csv` (49 rows). Both are derived
+entirely from the in-repo task config and FF48 table (no WRDS data), so they
+are exact for every vintage, and `report-drift` checks a build's maps against
+them (any difference is a FAIL: it is precisely the silent-permutation risk
+these files exist to prevent). The **firm map is deliberately not pinned**: its
+gvkey universe drifts with the Compustat vintage (canonical: 41,595 firms; a
+7-week-newer pull measured 41,601), so `report-drift` instead checks the
+ordering rule (ids `0..n-1` by sorted gvkey) and that the firm count is within
+1% of canonical — and firm ids must always be translated through the gvkey
+strings, never assumed positionally comparable across builds.
 
 ### A third of the sample has no industry
 
@@ -374,7 +403,17 @@ bit-identical to the canonical snapshot.
    md5s plus, per tabular artifact, the row/column counts and a **per-column
    distribution summary** (coverage, mean, sd, p05/p50/p95 of the regularized
    values). Six aggregate scalars over a 600,000-row column reveal nothing
-   firm-level — and unlike a hash, they are *comparable*.
+   firm-level — and unlike a hash, they are *comparable*. This is a deliberate,
+   maintainer-approved exception to the no-WRDS-values rule, recorded in
+   `NOTICE` alongside the regularization statistics and the mask. Provenance:
+   the md5 pins are the canonical build's own; the distribution summary was
+   computed from the canonical R13 research artifacts — the *internal* builder's
+   output off the same panel, row-count-identical to the pins and measured to
+   agree with this package's builder at worst |Δmean| 1e-06 (see the
+   calibration below). The statistics are order-invariant, so the two builders'
+   differing row order cannot affect them; the exact recipe is
+   `scripts/merge_canonical_column_stats.py` and the file records its own
+   provenance in `_column_stats_source`, which `report-drift` echoes.
 5. **Check drift, with a verdict.**
    ```bash
    proforma20q report-drift                       # vs the published statistics
@@ -382,7 +421,11 @@ bit-identical to the canonical snapshot.
    ```
    For each artifact it reports the row-count delta and the worst per-column
    move in mean, sd and coverage, then returns **PASS/FAIL** against documented
-   thresholds and **exits non-zero on FAIL**.
+   thresholds and **exits non-zero on FAIL**. It also checks the build's
+   [id maps](#if-you-train-on-the-tuple-view-the-id-maps) against the pinned
+   canonical reference: account/industry orderings must match exactly
+   (embedding permutation is a FAIL); the firm map is checked for the ordering
+   rule and a bounded count delta.
 
    | threshold | value |
    |---|---|

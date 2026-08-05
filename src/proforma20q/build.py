@@ -1038,6 +1038,41 @@ def build_tuple(raw_df, account_cols, firm_ind, *, firm_col="firm_id", qcol="qua
     return out, firm_id_map, account_id_map
 
 
+def account_id_map_table(account_id_map: dict) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"account_id": list(account_id_map.values()),
+         "account_name": list(account_id_map.keys())}).sort_values("account_id")
+
+
+def industry_id_map_table() -> pd.DataFrame:
+    _ranges, unknown_id, id_to_name = _ff48_flat()
+    # `_ff48_flat` returns only the 48 named industries; the tuple view's
+    # industry_id also takes `unknown_id`, which is the modal value -- 44.8% of
+    # firms and 32.3% of rows map to it. A map that omits it cannot decode a
+    # third of the artifact.
+    id_to_name = dict(id_to_name)
+    id_to_name.setdefault(unknown_id, load_ff48_ranges().get("unknown_name", "Unknown"))
+    return pd.DataFrame(
+        {"industry_id": sorted(id_to_name),
+         "industry_name": [id_to_name[i] for i in sorted(id_to_name)],
+         "is_reference_level": [i == unknown_id for i in sorted(id_to_name)]})
+
+
+def canonical_account_id_map(feature_set: str | None = None) -> dict[str, int]:
+    """The canonical tuple-view account universe, with its integer ids.
+
+    The feature set's statement items **plus ``scale``** (the size deflator,
+    which the tuple view carries as an account so a tuple-trained model can
+    denormalize), ids assigned by ``sorted()``. For pf_full that is 79 entries
+    with ``scale`` at account_id 60 -- NOT the bare 78-item submission universe;
+    the 18 items sorting after "scale" sit one id higher than they would in a
+    79-entry-unaware enumeration. Data-independent, so it is exact for every
+    vintage: it is the ordering the canonical build used.
+    """
+    fs = feature_set or load_task_config()["benchmark"]["feature_set"]
+    return {a: i for i, a in enumerate(sorted(set(feature_set_items(fs)) | {"scale"}))}
+
+
 def write_id_maps(out_dir, suffix: str, firm_id_map: dict, account_id_map: dict) -> dict:
     """Persist the tuple view's integer-id dictionaries next to the artifacts.
 
@@ -1047,27 +1082,16 @@ def write_id_maps(out_dir, suffix: str, firm_id_map: dict, account_id_map: dict)
     translated back into the gvkey strings and pf_full item names the submission
     schema requires, so a model trained on the tuple view has no route to a valid
     submission. ``.csv`` is git-ignored, so these stay untracked build outputs
-    like every other WRDS-derived file.
+    like every other WRDS-derived file (the pinned canonical reference maps
+    under ``reference/`` are the exception, via an explicit negation).
     """
     out_dir = Path(out_dir)
-    _ranges, unknown_id, id_to_name = _ff48_flat()
-    # `_ff48_flat` returns only the 48 named industries; the tuple view's
-    # industry_id also takes `unknown_id`, which is the modal value -- 44.8% of
-    # firms and 32.3% of rows map to it. A map that omits it cannot decode a
-    # third of the artifact.
-    id_to_name = dict(id_to_name)
-    id_to_name.setdefault(unknown_id, load_ff48_ranges().get("unknown_name", "Unknown"))
     tables = {
         "firm_id_map": pd.DataFrame(
             {"firm_id_int": list(firm_id_map.values()),
              "firm_id": list(firm_id_map.keys())}).sort_values("firm_id_int"),
-        "account_id_map": pd.DataFrame(
-            {"account_id": list(account_id_map.values()),
-             "account_name": list(account_id_map.keys())}).sort_values("account_id"),
-        "industry_id_map": pd.DataFrame(
-            {"industry_id": sorted(id_to_name),
-             "industry_name": [id_to_name[i] for i in sorted(id_to_name)],
-             "is_reference_level": [i == unknown_id for i in sorted(id_to_name)]}),
+        "account_id_map": account_id_map_table(account_id_map),
+        "industry_id_map": industry_id_map_table(),
     }
     written = {}
     for name, table in tables.items():
@@ -1097,6 +1121,138 @@ def read_id_maps(processed_dir, suffix: str) -> dict[str, pd.DataFrame]:
         if p.exists():
             out[name] = pd.read_csv(p, dtype=dtype)
     return out
+
+
+# The canonical 2026-06-05 build's firm universe (README: 41,595 firms). The
+# gvkey universe drifts with the Compustat vintage (a 7-week-newer pull
+# measured 41,601), so unlike the account/industry maps the firm map has no
+# exact pin -- only a count with a drift tolerance, plus the ordering rule.
+CANONICAL_N_FIRMS = 41_595
+
+
+def verify_id_maps(processed_dir, suffix: str, reference_dir=None, *,
+                   max_firm_delta_frac: float = 0.01) -> dict | None:
+    """Check a build's id maps against the pinned canonical reference.
+
+    Account and industry ids are embedding indices: a build whose ordering
+    differs from the canonical one silently permutes any embedding matrix
+    trained under it, so those two maps must match the pinned canonical
+    reference EXACTLY (ids and names). They are **always** compared against the
+    packaged CSVs under ``reference/`` -- the pins are data-independent, so
+    there is no vintage under which they don't apply, and comparing against a
+    trusted-build's maps instead could only weaken the check (a permuted
+    reference build would agree with an identically permuted rebuild, which is
+    precisely the failure this exists to catch).
+
+    The firm map's gvkey universe legitimately drifts with the WRDS vintage; it
+    is checked for the ordering rule instead (ids ``0..n-1`` assigned by sorted
+    gvkey) plus a bounded count delta. ``reference_dir`` (the ``--reference``
+    route) applies to the firm map only, where a vintage-local reference
+    genuinely is the better comparand than the canonical count.
+
+    Returns ``None`` when the build wrote no id maps at all (a tabular-only
+    build has none and does not need them), otherwise a per-map report plus an
+    overall ``"_ok"``.
+    """
+    from .config import canonical_id_map_path
+
+    built = read_id_maps(processed_dir, suffix)
+    if not built:
+        return None
+    report: dict = {}
+    ok = True
+
+    def _reference(name: str) -> pd.DataFrame | None:
+        p = canonical_id_map_path(name)
+        return pd.read_csv(p) if p.exists() else None
+
+    for name, id_col, name_col in (("account_id_map", "account_id", "account_name"),
+                                   ("industry_id_map", "industry_id", "industry_name")):
+        b = built.get(name)
+        if b is None:
+            report[name] = {"status": "missing"}
+            ok = False
+            continue
+        ref = _reference(name)
+        if ref is None:
+            report[name] = {"status": "no_reference"}
+            continue
+        b2 = b.sort_values(id_col).reset_index(drop=True)
+        r2 = ref.sort_values(id_col).reset_index(drop=True)
+        if (b2[id_col].tolist() == r2[id_col].tolist()
+                and b2[name_col].astype(str).tolist() == r2[name_col].astype(str).tolist()):
+            report[name] = {"status": "ok", "n": len(b2)}
+            continue
+        merged = b2[[id_col, name_col]].merge(
+            r2[[id_col, name_col]], on=id_col, how="outer",
+            suffixes=("_built", "_reference"))
+        diffs = merged[merged[f"{name_col}_built"].astype(str)
+                       != merged[f"{name_col}_reference"].astype(str)]
+        report[name] = {
+            "status": "mismatch", "n_built": len(b2), "n_reference": len(r2),
+            "first_diffs": diffs.head(5).to_dict("records"),
+        }
+        ok = False
+
+    f = built.get("firm_id_map")
+    if f is None:
+        report["firm_id_map"] = {"status": "missing"}
+        ok = False
+    else:
+        ids = f["firm_id_int"].tolist()
+        gvkeys = f["firm_id"].astype(str).tolist()
+        ordering_ok = (ids == list(range(len(ids)))) and (gvkeys == sorted(gvkeys))
+        if reference_dir is not None:
+            rp = Path(reference_dir) / f"firm_id_map__{suffix}.csv"
+            n_ref = (sum(1 for _ in open(rp, encoding="utf-8")) - 1) if rp.exists() else None
+        else:
+            n_ref = CANONICAL_N_FIRMS
+        entry: dict = {"n_firms": len(f), "n_reference": n_ref,
+                       "ordering_rule_ok": ordering_ok}
+        delta = (abs(len(f) - n_ref) / n_ref) if n_ref else None
+        entry["delta_frac"] = delta
+        if not ordering_ok:
+            entry["status"] = "mismatch"
+            ok = False
+        elif delta is not None and delta > max_firm_delta_frac:
+            entry["status"] = "drift_exceeded"
+            ok = False
+        else:
+            entry["status"] = "ok"
+        report["firm_id_map"] = entry
+
+    report["_ok"] = ok
+    return report
+
+
+def id_map_log_lines(id_check: dict) -> list[str]:
+    """Human-readable summary of a :func:`verify_id_maps` report for the build
+    log. Split out of ``build`` so the branch is unit-testable: every failure
+    mode ``verify_id_maps`` can report must produce output -- a ~50-minute
+    build ending silently on a state ``report-drift`` would FAIL is the exact
+    alarming-silence problem the end-of-build messaging exists to prevent.
+    """
+    statuses = {n: id_check[n]["status"]
+                for n in ("account_id_map", "industry_id_map", "firm_id_map")}
+    if id_check["_ok"]:
+        f = id_check["firm_id_map"]
+        if all(s == "ok" for s in statuses.values()):
+            return ["  id maps: account/industry orderings match the pinned "
+                    "canonical reference; firm map "
+                    f"ordering rule ok ({f['n_firms']:,} firms)"]
+        skipped = sorted(n for n, s in statuses.items() if s == "no_reference")
+        return ["  id maps: ordering rule ok; no pinned canonical reference for "
+                f"this suffix to compare {', '.join(skipped)} against"]
+    bad = ", ".join(f"{n}: {s}" for n, s in statuses.items()
+                    if s not in ("ok", "no_reference"))
+    return [
+        f"  *** WARNING: id-map check FAILED ({bad}).",
+        "  *** account/industry ids are embedding indices -- a differing ordering "
+        "silently permutes",
+        "  *** any embedding trained under it; firm ids must stay sorted-gvkey "
+        "contiguous. Run",
+        "  *** `proforma20q report-drift` for detail.",
+    ]
 
 
 def _year_to_max_q(year: int) -> int:
@@ -1226,6 +1382,10 @@ def build(
         n_ind = sum(1 for _ in open(id_paths["industry_id_map"], encoding="utf-8")) - 1
         log(f"  id maps: {len(firm_id_map):,} firms, {len(account_id_map)} accounts, "
             f"{n_ind} industries (incl. the unknown reference level)")
+        id_check = verify_id_maps(out_dir, suffix)
+        if id_check is not None:
+            for line in id_map_log_lines(id_check):
+                log(line)
         tr, va, te = split_tuple(tup, splits["train_end_year"], splits["val_end_year"],
                                  pre_quarters=fe["recent_levels"] + fe["yoy_changes"] - 1)
         for name, part in (("train", tr), ("val", va), ("test", te)):

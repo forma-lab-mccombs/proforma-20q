@@ -21,6 +21,14 @@ results/
 # approved as safe to publish.
 !src/proforma20q/reference/*.parquet
 
+# ...and the pinned canonical id maps (account/industry embedding orderings):
+# derived entirely from the in-repo task config and FF48 table -- item names and
+# integer ids, no WRDS data of any kind. Deliberately NOT a bare `reference/*.csv`:
+# the firm map is vintage-dependent WRDS-derived membership and must never be
+# committed, so only the two data-independent maps are un-ignored.
+!src/proforma20q/reference/account_id_map__*.csv
+!src/proforma20q/reference/industry_id_map__*.csv
+
 # WRDS credentials must never be committed.
 .pgpass
 *.pgpass

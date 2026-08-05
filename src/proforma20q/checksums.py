@@ -6,11 +6,14 @@ rebuild against them.
 
 * ``md5`` of each artifact file -> exact bit-for-bit reproduction check.
 * per-column md5 of the regularized target/level columns (values rounded before
-  hashing) -> a coarse *fraction of columns that diverge*, used by
-  ``report-drift`` since a fresh WRDS pull is never bit-identical (Compustat is
-  revised). It flags WHICH parts moved without revealing any value.
+  hashing) -> a coarse *fraction of columns that diverge*. Position-sensitive,
+  so it is never a drift measure; retained for the bit-exact path.
 * per-tabular ``n_rows`` / ``n_cols`` -> aggregate scalars (no firm-level data)
   that let ``report-drift`` report the row-count delta of a diverging vintage.
+* per-column ``column_stats`` (coverage, mean, sd, p05/p50/p95 of the
+  regularized values) -> the *comparable* statistics ``report-drift`` scores
+  against :data:`DRIFT_THRESHOLDS` to render its PASS/FAIL verdict. Six
+  aggregate moments over a 600k-row column reveal nothing firm-level.
 
 The bundled ``checksums.json`` is populated by the benchmark maintainer from the
 canonical build (``write_checksums``); users compare against it with
@@ -161,13 +164,17 @@ def write_checksums(
     *,
     download_date: str | None = None,
     task_version: str | None = None,
+    column_stats_source: str | None = None,
 ) -> Path:
     """(Maintainer) Populate ``checksums.json`` from the canonical build.
 
-    ``download_date`` (the WRDS pull date, ISO ``YYYY-MM-DD``) and
-    ``task_version`` are recorded alongside the hashes; when omitted they are
+    ``download_date`` (the WRDS pull date, ISO ``YYYY-MM-DD``),
+    ``task_version`` and ``column_stats_source`` (free-text provenance of the
+    per-column statistics, e.g. which build produced them and how it relates to
+    the canonical one) are recorded alongside the hashes; when omitted they are
     carried forward from the existing ``checksums.json`` so a re-run preserves
-    them. Only hashes are written -- never any WRDS-derived value.
+    them. Only hashes and aggregate per-column statistics are written -- never
+    any firm-level value.
     """
     out_path = Path(out_path)
     prior: dict = {}
@@ -179,9 +186,17 @@ def write_checksums(
     core = compute_checksums(processed_dir, suffix)
     resolved_dl = download_date if download_date is not None else prior.get("download_date")
     resolved_tv = task_version or prior.get("task_version")
+    resolved_src = column_stats_source or prior.get("_column_stats_source")
     if resolved_dl is None or resolved_tv is None:
         print(f"  Warning: writing checksums with download_date={resolved_dl!r}, "
               f"task_version={resolved_tv!r} (no value passed and none in {out_path.name}).")
+    if column_stats_source is None and resolved_src is not None:
+        # Unlike a stale download_date (inert metadata), a stale provenance note
+        # is printed by report-drift as the stated source of statistics it may
+        # no longer describe -- exactly when the stats were just recomputed from
+        # a different build.
+        print(f"  Warning: carrying forward _column_stats_source from {out_path.name}; "
+              f"pass column_stats_source= if these statistics came from this build.")
     record = {
         "_status": "populated",
         "task_version": resolved_tv,
@@ -189,6 +204,8 @@ def write_checksums(
         "download_date": resolved_dl,
         "artifacts": core["artifacts"],
     }
+    if resolved_src is not None:
+        record["_column_stats_source"] = resolved_src
     out_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     return out_path
 
@@ -382,6 +399,17 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
     for name in present:
         if name not in pub:
             report[name] = {"status": "extra"}
+
+    # Id maps: the tuple view's embedding orderings, checked against the pinned
+    # canonical reference (or the reference build's own maps). None when the
+    # build wrote no id maps (a tabular-only build) -- that is not a failure,
+    # the maps only exist to align tuple-view integer ids.
+    from .build import verify_id_maps
+    id_rep = verify_id_maps(processed_dir, suffix,
+                            reference_dir=published.get("_source"))
+    if id_rep is not None:
+        report["_id_maps"] = id_rep
+
     if not have_stats:
         report["_note"] = (
             "the published checksums carry only per-column HASHES, which cannot "
@@ -389,8 +417,15 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
             "position-sensitive). Only the row-count delta below is meaningful. "
             "Compare against a reference build with `--reference <dir>`, or ask "
             "the maintainer to republish checksums.json with column_stats.")
-    if verdicts and not all(verdicts):
-        report["_pass"] = False          # a missing artifact is a failure either way
+    if have_stats and published.get("_column_stats_source"):
+        # surface the provenance of the reference statistics next to the verdict
+        # they decide, rather than leaving it discoverable only inside the JSON
+        report["_column_stats_source"] = published["_column_stats_source"]
+    id_ok = id_rep["_ok"] if id_rep is not None else True
+    if (verdicts and not all(verdicts)) or not id_ok:
+        # a missing artifact or a permuted/missing id map is a failure whether
+        # or not comparable statistics were published
+        report["_pass"] = False
     elif not have_stats:
         report["_pass"] = None           # nothing comparable was published
     else:
