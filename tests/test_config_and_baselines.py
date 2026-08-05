@@ -149,9 +149,10 @@ def test_naive_alone_still_forecasts_every_truth_cell(tmp_path):
 
 def test_baseline_column_projection_reads_only_what_it_needs():
     """The three canonical splits are 2,547 columns / ~12 GB together. `naive`
-    reads one column per target, `fade` adds the 20 horizons; only the linear
-    family needs the feature matrix. Reading everything regardless is what put
-    `baselines --which naive,fade` over the memory ceiling (I-3)."""
+    reads the four seasonal-alignment levels per target, `fade` reads `level_0`
+    plus the 20 horizons; only the linear family needs the feature matrix.
+    Reading everything regardless is what put `baselines --which naive,fade`
+    over the memory ceiling (I-3)."""
     from proforma20q.baselines.run import _columns_for
 
     cols = (["firm", "origin", "scale_level_0"]
@@ -162,7 +163,7 @@ def test_baseline_column_projection_reads_only_what_it_needs():
     targets = ["niq"]
 
     naive = _columns_for(["naive"], cols, targets)
-    assert naive == ["firm", "origin", "niq_level_0"]
+    assert naive == ["firm", "origin"] + [f"niq_level_{i}" for i in range(4)]
 
     fade = _columns_for(["fade"], cols, targets)
     assert set(fade) == {"firm", "origin", "niq_level_0"} | {f"niq_t{h}" for h in range(1, 21)}
@@ -170,6 +171,70 @@ def test_baseline_column_projection_reads_only_what_it_needs():
     full = _columns_for(["linear"], cols, targets)
     assert set(full) == set(cols)
     assert full == [c for c in cols if c in set(full)]   # original column order
+
+
+def test_naive_is_the_seasonal_random_walk():
+    """The published naive row is the SEASONAL random walk: h=1 is predicted
+    from level_3, h=2 from level_2, h=3 from level_1, h=4 from level_0, and the
+    pattern repeats mod 4, so every base is fiscal-quarter-aligned with the
+    cell it predicts. Predicting every horizon from level_0 instead is a
+    different (materially stronger) model -- the spec regression behind the
+    -0.041 vs -0.005 Full-sample gap."""
+    from proforma20q.baselines.naive import seasonal_lag
+
+    assert [seasonal_lag(h) for h in range(1, 9)] == [3, 2, 1, 0, 3, 2, 1, 0]
+
+    n = 5
+    test = pd.DataFrame({
+        "firm": [f"f{i}" for i in range(n)],
+        "origin": pd.to_datetime(["2015-03-31"] * n),
+        **{f"niq_level_{lag}": np.arange(n, dtype=float) + 10 * lag
+           for lag in range(4)},
+        **{f"niq_t{h}": np.zeros(n) for h in range(1, 9)},
+    })
+    fc = run_baseline("naive", None, test, targets=["niq"])
+    for h in range(1, 9):
+        got = fc.loc[fc["horizon"] == h, "prediction"].to_numpy()
+        np.testing.assert_array_equal(
+            got, test[f"niq_level_{seasonal_lag(h)}"].to_numpy())
+
+
+def test_fade_fits_one_ar1_per_item_and_horizon():
+    """The published fade row fits one (rho, b) per (item, horizon) -- each
+    item fades toward its mean at its own speed. One slope pooled across items
+    is a different model (0.106 vs 0.183 Full-sample R^2). Two items with
+    different known slopes in one fit frame must be recovered separately."""
+    from proforma20q.baselines.naive import _fit_fade
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=400)
+    train = pd.DataFrame({
+        "a_level_0": x, "a_t1": 0.9 * x + 0.5,
+        "b_level_0": x, "b_t1": -0.2 * x + 1.0,
+    })
+    coeffs = _fit_fade(train, ["a", "b"], [1])
+    np.testing.assert_allclose(coeffs[("a", 1)], (0.9, 0.5), atol=1e-9)
+    np.testing.assert_allclose(coeffs[("b", 1)], (-0.2, 1.0), atol=1e-9)
+
+
+def test_fade_fallbacks_keep_every_pair_finite():
+    """The fallback branches exist to keep a fade forecast finite everywhere --
+    one NaN prediction would shrink every model's common sample (the invariant
+    evaluate warns about). None of them is reachable from the synthetic-build
+    fixture (all its pairs take the OLS path), so pin each branch directly:
+    sub-MIN_FIT_N sample -> no-signal fade (0, label mean); no finite pairs at
+    all -> plain RW (1, 0); constant x -> no-signal fade."""
+    from proforma20q.baselines.naive import MIN_FIT_N, _fit_fade
+
+    short = pd.DataFrame({"a_level_0": [1.0, 2.0], "a_t1": [3.0, 5.0]})
+    assert _fit_fade(short, ["a"], [1]) == {("a", 1): (0.0, 4.0)}
+
+    empty = pd.DataFrame({"a_level_0": [np.nan] * 3, "a_t1": [1.0, 2.0, 3.0]})
+    assert _fit_fade(empty, ["a"], [1]) == {("a", 1): (1.0, 0.0)}
+
+    const = pd.DataFrame({"a_level_0": np.zeros(MIN_FIT_N),
+                          "a_t1": np.full(MIN_FIT_N, 2.5)})
+    assert _fit_fade(const, ["a"], [1]) == {("a", 1): (0.0, 2.5)}
 
 
 def test_elasticnet_and_linear_run(tmp_path):

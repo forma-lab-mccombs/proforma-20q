@@ -148,9 +148,10 @@ def load_tabular(path, columns: list[str] | None = None) -> pd.DataFrame:
     """Read a tabular artifact and normalize the metadata column names.
 
     ``columns`` projects the read. The canonical splits are 2,547 columns and
-    ~12 GB across the three of them; `naive` reads 79 of those columns and
-    `fade` 1,639, so the projection is the difference between a baseline run
-    that fits in memory and one that does not.
+    ~12 GB across the three of them; `naive` reads 314 of those columns (the
+    four seasonal-alignment levels per item) and `fade` 1,640, so the
+    projection is the difference between a baseline run that fits in memory
+    and one that does not.
     """
     from ..schema import PARQUET_ENGINE
     if columns is not None:

@@ -271,7 +271,7 @@ the linear family takes the better part of a day (see
 [Reference baselines](#reference-baselines)).
 
 ```bash
-proforma20q baselines --which naive,fade      # ~17 min, ~11 GB peak
+proforma20q baselines --which naive,fade      # ~15 min, ~8.5 GB peak
 proforma20q evaluate --against baselines --out results/metrics
 ```
 
@@ -309,8 +309,8 @@ They anchor the leaderboard and let you verify your pipeline.
 
 | baseline     | what it is | cost at canonical scale |
 |--------------|------------|-------------------------|
-| `naive`      | random walk — forecast = value at origin; the **change-space zero anchor** (R² ≈ 0 by construction). Every model worth shipping beats it. | measured: naive+fade together **17 min / 11 GB peak**, writing two full-coverage 550,620,720-row forecasts (~3.5 GB each) |
-| `fade`       | pooled AR(1) / fade-to-mean — one `(ρ_h, b_h)` per horizon, pooled across items and firms. | ″ |
+| `naive`      | **seasonal random walk** — forecast for horizon *h* is the newest lagged level a whole number of years before the forecast quarter (`level_{(4−h mod 4) mod 4}`: h=1 ← `level_3`, h=2 ← `level_2`, h=3 ← `level_1`, h=4 ← `level_0`, repeating). Same-fiscal-quarter alignment; the paper's baseline anchor. Every model worth shipping beats it. | measured with the current specs (2026-08 vintage, 32 GB machine): naive+fade together **14.5 min / 8.4 GB peak**, writing two full-coverage ~550M-row forecasts (~2.7 GB each) |
+| `fade`       | AR(1) / fade-to-mean — one `(ρ_{i,h}, b_{i,h})` per **(item, horizon)** pair (1,560 closed-form OLS fits on train+val), so each item fades toward its mean at its own speed. | ″ |
 | `elasticnet` | per-horizon `(alpha, l1_ratio)` cross-validated on `niq` over 2002–2009 and reused across all 78 targets; refits on train+val. | **hours.** Measured one refit at canonical train size (578,831 × 985): 5.3 s at h=1, 1.8 s at h=20 → ~1–2 h for the 1,560 refits, plus ~1 h for the 840-fit CV grid (42 combos × 20 horizons) |
 | `linear`     | plain OLS per (target, horizon). | **the most expensive of the four, not the cheapest.** Measured one fit at canonical train size: 32.5 s at h=1, 15.2 s at h=20 → **7–14 h** for 1,560 fits. OLS solves by SVD; coordinate descent with an L1 penalty is ~6× faster here |
 
@@ -331,7 +331,7 @@ On a canonical build the shipped baselines score:
 
 | model | R² (Full sample) |
 |-------|:----------------:|
-| naive (RW anchor) | −0.0412 |
+| naive (seasonal RW anchor) | −0.0412 |
 | fade / AR(1) | 0.1827 |
 | ElasticNet | 0.2585 |
 | *your model here* | |
