@@ -489,7 +489,7 @@ row-identical to the canonical one. It will not be: Compustat is revised, so a
 fresh pull drifts. **Pass the canonical row index alongside it and the
 bitmap works anyway** — the index ships in this repository too
 ([`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet),
-1.9 MB), so this route needs no download either:
+0.9 MB), so this route needs no download either:
 
 ```bash
 proforma20q evaluate my_forecasts.parquet --against baselines \
@@ -563,7 +563,7 @@ coverage bitmap plus the row labels it counts through, no firm-level values:
 | artifact | size | md5 | for |
 |---|---|---|---|
 | [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
-| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | 1.9 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). A byte-identical copy sits in the archival deposit; **this in-repo copy is the one to use.** |
+| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | 0.9 MB | `531f3234…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). The archival deposit carries the same index in a default-compression write (`adbc2ae6…`, row-identical); **this in-repo copy is the one to use.** |
 
 The remaining artifacts are deposited at
 **[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**
@@ -587,11 +587,12 @@ absolute-error track):
 | `ffnn_large_b50__pf_full__test__predictions.parquet` | 4.5 GB | `915779a3…` | **FFNN (large)** 5-seed mixture — Panel A comparator row. |
 | `forma_lap05_fgrid__pf_full__test__predictions.parquet` | 7.4 GB | `1e8b0415…` | canonical R13 **Forma** Laplace mixture (absolute-error track) — the **Panel B** Full column. |
 | `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
+| `full_sample_grid_rows.parquet` | 1.9 MB | `adbc2ae6…` | archival copy of the in-repo **row index** — the same 352,962 rows in a default-compression write, hence a digest different from the in-repo file's. |
 
-The deposit also carries byte-identical copies of the in-repo mask and row
-index (same md5s as the table above), so the archival record is complete on its
-own — but nothing in this README requires downloading them: the in-repo copies
-are canonical.
+The deposit also carries a byte-identical copy of the in-repo mask (same md5 as
+the table above) and the row index in its original default-compression write,
+so the archival record is complete on its own — but nothing in this README
+requires downloading them: the in-repo copies are canonical.
 
 > **Joining these files to your own build:** `origin`/`quarter` in the forecasts
 > is a quarter-*end* timestamp at **microsecond** precision, while a canonical

@@ -344,20 +344,36 @@ def test_download_artifacts_only_cannot_drop_the_sidecar():
 def test_readme_artifact_digests_match_script_pins():
     """The README artifact tables duplicate 8-hex digest prefixes by hand; a
     hand copy is exactly how the superseded run-1 pin went stale (gh#15).
-    Update policy: change scripts/download_artifacts.py first, then make the
-    README rows agree -- this test fails on any drift between the two."""
+    Every digest the README quotes must therefore be *anchored*: it matches
+    either the scripts/download_artifacts.py pin (the deposit copy) or the
+    md5 of the file actually tracked in this repository. The row index
+    legitimately carries one of each -- the in-repo write is gzip-recompressed,
+    the deposit keeps the original default-compression write.
+    Update policy: change scripts/download_artifacts.py (or the in-repo file)
+    first, then make the README rows agree -- this test fails on any drift."""
     dl = _load_script("download_artifacts.py")
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     rows = re.findall(r"\|\s*\[?`([A-Za-z0-9_./]+)`\]?[^|]*\|[^|]*\|\s*`([0-9a-f]{8})…`", readme)
-    prefixes: dict[str, str] = {}
+    listed: dict[str, set[str]] = {}
     for path, pref in rows:
-        name = path.rsplit("/", 1)[-1]
-        assert prefixes.get(name, pref) == pref, f"README lists {name} with conflicting digests"
-        prefixes[name] = pref
+        listed.setdefault(path.rsplit("/", 1)[-1], set()).add(pref)
+
+    anchors: dict[str, set[str]] = {name: {md5} for name, md5 in dl.ARTIFACTS.items()}
+    for rel in ("artifacts/full_sample_grid_rows.parquet",
+                "artifacts/full_sample_mask_bits.npy"):
+        p = _ROOT / rel
+        anchors.setdefault(p.name, set()).add(hashlib.md5(p.read_bytes()).hexdigest())
+
+    for name, prefs in listed.items():
+        assert name in anchors, f"README table digest for {name}, which is neither pinned nor in-repo"
+        for pref in prefs:
+            assert any(full.startswith(pref) for full in anchors[name]), (
+                f"README digest `{pref}…` for {name} matches neither the "
+                f"download_artifacts.py pin nor the tracked file's md5")
     for name, md5 in dl.ARTIFACTS.items():
-        assert name in prefixes, f"{name} is pinned in download_artifacts.py but absent from the README tables"
-        assert md5.startswith(prefixes[name]), \
-            f"README digest `{prefixes[name]}…` for {name} does not match the pinned md5 {md5}"
+        assert name in listed, f"{name} is pinned in download_artifacts.py but absent from the README tables"
+        assert any(md5.startswith(p) for p in listed[name]), \
+            f"README never lists the pinned md5 {md5} for {name}"
 
     # The README also states the DOI in prose. Nothing otherwise ties it to the id
     # the script actually fetches from, so a corrected record id could leave the
