@@ -615,7 +615,7 @@ mixture NLL/CRPS) needs the five per-seed forecasts and is out of scope here
 | [`docs/prompts/`](docs/prompts/) | The byte-exact system prompts for both elicitation arms, with published SHA-256 anchors ([`docs/README.md`](docs/README.md)). Part C's typeset copies are ASCII transliterations; these files are the originals. |
 
 > **This repository holds the canonical `release_documentation.pdf`**
-> (`sha256 55fa6f76dffaca29b1027a8438d5c09e26dc182d89790f50ef9ec5803a46fa5e`).
+> (`sha256 347c32111942ef2d2819347152008460d1ddf9fc56bd2234e1cfe4ddf6a56e0c`).
 > A byte-identical copy also ships in the companion model repository, so that
 > anyone holding only that repository still has Parts B and C, which describe
 > its code. If the two digests ever differ, this copy wins — regenerate both
