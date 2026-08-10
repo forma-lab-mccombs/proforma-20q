@@ -11,20 +11,53 @@ abstract: >-
 type: software
 version: 0.1.0
 license: Apache-2.0
-repository-code: "https://github.com/ANONYMIZED/proforma-20q"
+repository-code: "https://github.com/forma-lab-mccombs/proforma-20q"
 keywords:
   - benchmark
   - financial-statement-forecasting
   - probabilistic-forecasting
   - Compustat
-# NOTE: authorship is intentionally minimal here so the repository is trivial to
-# mirror anonymously for double-blind review. Populate authors/preferred-citation
-# at (de-anonymized) public release.
 authors:
-  - name: "The ProForma-20Q Authors"
+  - family-names: "Johnson"
+    given-names: "Travis L."
+    orcid: "https://orcid.org/0000-0003-4475-6697"
+    affiliation: "The University of Texas at Austin"
+  - family-names: "Jiang"
+    given-names: "Jiannan"
+    affiliation: "The University of Texas at Austin"
+  - family-names: "Chaudhuri"
+    given-names: "Soumyabrata"
+    affiliation: "The University of Texas at Austin"
+  - family-names: "Chen"
+    given-names: "Yihao"
+    affiliation: "The University of Texas at Austin"
+  - family-names: "Falvey"
+    given-names: "Lauren"
+    affiliation: "The University of Texas at Austin"
+  - family-names: "O'Cofaigh"
+    given-names: "Donal"
+    affiliation: "The University of Texas at Austin"
 preferred-citation:
   type: conference-paper
   title: "ProForma-20Q (ICAIF '26)"
   year: 2026
   authors:
-    - name: "The ProForma-20Q Authors"
+    - family-names: "Johnson"
+      given-names: "Travis L."
+      orcid: "https://orcid.org/0000-0003-4475-6697"
+      affiliation: "The University of Texas at Austin"
+    - family-names: "Jiang"
+      given-names: "Jiannan"
+      affiliation: "The University of Texas at Austin"
+    - family-names: "Chaudhuri"
+      given-names: "Soumyabrata"
+      affiliation: "The University of Texas at Austin"
+    - family-names: "Chen"
+      given-names: "Yihao"
+      affiliation: "The University of Texas at Austin"
+    - family-names: "Falvey"
+      given-names: "Lauren"
+      affiliation: "The University of Texas at Austin"
+    - family-names: "O'Cofaigh"
+      given-names: "Donal"
+      affiliation: "The University of Texas at Austin"

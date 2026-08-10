@@ -606,7 +606,7 @@ requires downloading them: the in-repo copies are canonical.
 They hold only **model outputs — no firm-level values**. This release covers
 the **point track (Panels A and B)**; the density track (Panel C — exact
 mixture NLL/CRPS) needs the five per-seed forecasts and is out of scope here
-([#3](https://github.com/ANONYMIZED/proforma-20q/issues/3) tracks it).
+([#3](https://github.com/forma-lab-mccombs/proforma-20q/issues/3) tracks it).
 
 ### Documentation
 

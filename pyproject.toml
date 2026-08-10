@@ -54,9 +54,9 @@ proforma20q = "proforma20q.cli:main"
 # Placeholder owner through the double-blind review window, matching
 # CITATION.cff. The anonymous mirror serves this file verbatim, so a real
 # org name here would deanonymize the submission. Restore at C6 (go-public).
-Homepage = "https://github.com/ANONYMIZED/proforma-20q"
-Repository = "https://github.com/ANONYMIZED/proforma-20q"
-Issues = "https://github.com/ANONYMIZED/proforma-20q/issues"
+Homepage = "https://github.com/forma-lab-mccombs/proforma-20q"
+Repository = "https://github.com/forma-lab-mccombs/proforma-20q"
+Issues = "https://github.com/forma-lab-mccombs/proforma-20q/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
