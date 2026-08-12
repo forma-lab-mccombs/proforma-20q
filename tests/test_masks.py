@@ -381,6 +381,13 @@ def test_readme_artifact_digests_match_script_pins():
     assert f"zenodo.{dl.ZENODO_RECORD}" in readme, \
         f"README does not mention zenodo.{dl.ZENODO_RECORD}; the DOI and ZENODO_RECORD have drifted"
 
+    # CITATION.cff states it a third time, and this one fails quietly: a stale DOI
+    # in citation metadata propagates into bibliographies and into the Zenodo and
+    # GitHub widgets, where nothing breaks the way a bad download would.
+    citation = (_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    assert f"zenodo.{dl.ZENODO_RECORD}" in citation, \
+        f"CITATION.cff does not name zenodo.{dl.ZENODO_RECORD}; the DOI and ZENODO_RECORD have drifted"
+
 
 def test_release_documentation_pdf_matches_the_readme_digest():
     """The README block says this repository holds the canonical PDF and that a

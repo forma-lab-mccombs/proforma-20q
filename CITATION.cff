@@ -17,6 +17,12 @@ keywords:
   - financial-statement-forecasting
   - probabilistic-forecasting
   - Compustat
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21269003
+    description: >-
+      Archival deposit of the reference model forecasts, together with archival
+      copies of the evaluation mask and row index that ship in this repository.
 authors:
   - family-names: "Johnson"
     given-names: "Travis L."
