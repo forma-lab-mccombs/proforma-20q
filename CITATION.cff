@@ -21,8 +21,8 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.21269003
     description: >-
-      Archival deposit of the reference model forecasts and the Full-sample
-      evaluation mask. Fetch and verify with scripts/download_artifacts.py.
+      Archival deposit of the reference model forecasts, together with archival
+      copies of the evaluation mask and row index that ship in this repository.
 authors:
   - family-names: "Johnson"
     given-names: "Travis L."
