@@ -8,12 +8,46 @@ the License at http://www.apache.org/licenses/LICENSE-2.0
 This product includes the Fama-French 48 industry SIC classification derived
 from the Kenneth R. French Data Library.
 
-NO WRDS-DERIVED FIRM-LEVEL VALUES ARE DISTRIBUTED. The package does ship the
-published canonical regularization statistics (aggregate per-(feature, quarter)
-mu/sigma/k moments derived from Compustat, in src/proforma20q/reference/), the
-per-column drift-check statistics (six aggregate moments -- coverage, mean, sd,
-p05/p50/p95 -- per regularized column of >= 211k rows, in
-src/proforma20q/checksums.json), the Full-sample coverage bitmap, and its row
-index -- a (firm, quarter) membership list that reveals no reported figures
-(artifacts/). WRDS / Compustat / CRSP credentials and license are the user's
-responsibility; see README.md.
+NO COMPUSTAT-DERIVED DATA IS DISTRIBUTED UNDER THIS LICENSE. The Apache-2.0
+grant above covers the code, the configuration and the file digests in this
+repository, and nothing else.
+
+Compustat is licensed to the authors through WRDS for non-commercial use, and
+the underlying rights are the University's. The Apache License permits
+commercial use, so Compustat-derived material cannot be distributed under it.
+Every such artifact is published separately, under the Forma Non-Commercial
+Research Licence (WRDS-Conditioned), from gated Hugging Face repositories:
+
+  * the canonical regularization statistics -- per-(feature, quarter) mu/sigma/k
+    moments, which define the benchmark's target space:
+      https://huggingface.co/forma-lab-mccombs/forma
+      -> reference/regularization_stats.parquet
+
+  * the canonical per-column drift statistics (coverage, mean, sd, p05/p50/p95
+    per regularized column), the Full-sample coverage bitmap, its
+    (grid_row, firm, origin) row index, and the released model forecasts:
+      https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts
+
+Both gates are automatic: any Hugging Face account can accept the terms and get
+immediate access. Use of these artifacts is additionally conditioned on the user
+holding their own valid Compustat/WRDS entitlement -- which every user of them
+necessarily does, since without one there is no panel to build.
+
+Coarseness is not the test. Six aggregate moments over a 600,000-row column
+reveal nothing firm-level, but they are still derived from a
+non-commercially-licensed source, so they are gated on the same footing as the
+regularization statistics rather than carved out as an exception.
+
+What remains in this repository is not Compustat-derived: the task
+configuration, the Fama-French 48 SIC ranges, the account and industry id maps
+(item names and integer orderings only), the synthetic fixtures under
+examples/, and the md5 file digests in src/proforma20q/checksums.json -- a hash
+of a file is not that file's content.
+
+Earlier releases of this repository did distribute the regularization
+statistics, the coverage bitmap and its row index under Apache-2.0. Those
+published copies remain available and that grant is irrevocable; this notice
+describes what is distributed going forward.
+
+WRDS / Compustat / CRSP credentials and license are the user's responsibility;
+see README.md.

@@ -7,10 +7,12 @@
     proforma20q validate  my_forecasts.parquet        # submission-schema check
     proforma20q report-drift                          # vintage divergence vs canonical checksums
 
-No firm-level WRDS-derived values ship with the package (the bundled canonical
-regularization statistics are aggregate per-(feature, quarter) moments, and the
-bundled mask/row index carry coverage only); a build needs the user's own WRDS
-credentials (see README).
+No Compustat-derived data ships with this package. The canonical regularization
+statistics, the coverage mask and its row index, and the canonical per-column
+drift statistics are fetched on demand from gated Hugging Face repositories
+under the Forma Non-Commercial Research Licence (WRDS-Conditioned); the code
+here is Apache-2.0. `validate` and `evaluate` against `examples/` need no
+credentials at all; a build needs the user's own WRDS credentials (see README).
 """
 from __future__ import annotations
 
@@ -105,18 +107,23 @@ def cmd_build(args) -> int:
               "will NOT be comparable to the published numbers -- pass "
               "--reg-stats canonical for that.")
     elif reg_stats == "canonical":
-        from .config import CANONICAL_TAG, canonical_reg_stats_path
+        from .config import CANONICAL_TAG, ensure_canonical_reg_stats
+        from .gated import GatedArtifactError
         # `--tag` names the OUTPUT dataset; the canonical statistics are a fixed
         # published artifact. Only look for a tag-specific one if it exists,
         # otherwise pin the published R13 set -- building a differently-tagged
         # dataset in the published target space is a legitimate thing to want.
-        reg_stats = canonical_reg_stats_path(args.tag or CANONICAL_TAG)
-        if not Path(reg_stats).exists():
-            reg_stats = canonical_reg_stats_path(CANONICAL_TAG)
-            if not Path(reg_stats).exists():
-                print(f"No canonical regularization statistics bundled at {reg_stats}; "
-                      f"pass --reg-stats estimate or an explicit path.", file=sys.stderr)
-                return 2
+        # The statistics are Compustat-derived and therefore gated rather than
+        # bundled; this downloads and md5-verifies them on first use.
+        try:
+            reg_stats = ensure_canonical_reg_stats(args.tag or CANONICAL_TAG)
+        except GatedArtifactError as e:
+            print(f"{e}\n\n"
+                  f"Alternatively pass `--reg-stats estimate` to re-estimate from your\n"
+                  f"own panel -- but those targets are NOT comparable to the published\n"
+                  f"numbers, so `report-drift` and the leaderboard will not apply.",
+                  file=sys.stderr)
+            return 2
         print(f"Reg-stats: PINNED to the published canonical statistics "
               f"({Path(reg_stats).name}).")
 
@@ -324,6 +331,19 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
         print(f"\n  reference statistics provenance: {rep['_column_stats_source']}")
     if rep.get("_note"):
         print(f"\n  NOTE: {rep['_note']}")
+    if rep.get("_not_verified"):
+        # Nothing was compared. Say so in those words and exit non-zero: the
+        # published promise is "verified by published checksums", and a
+        # reference that could not be reached means UNVERIFIED, not "fine".
+        print("\n  VERDICT: NOT VERIFIED")
+        print("  The canonical per-column statistics could not be fetched, so no\n"
+              "  drift comparison was performed. This is NOT a pass -- your build\n"
+              "  has not been checked against the published reference.\n")
+        for line in rep["_not_verified"].splitlines():
+            print(f"  {line}")
+        print("\n  Or compare against a build you already trust:\n"
+              "    proforma20q report-drift --reference <dir>")
+        return 3
     if rep.get("_pass") is None:
         print("  VERDICT: indeterminate (no comparable statistic published)")
         return 0

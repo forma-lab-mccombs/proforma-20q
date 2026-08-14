@@ -45,7 +45,13 @@ dependencies = [
 # The WRDS client is only needed for `proforma20q download` / `build`. Scoring a
 # forecast file and running the baselines never touch it.
 wrds = ["wrds"]
-dev = ["pytest>=7", "pyarrow"]
+# The Hugging Face client is only needed to fetch the gated Compustat-derived
+# artifacts (`build --reg-stats canonical`, `report-drift`, and
+# scripts/download_artifacts.py). `validate` and `evaluate` against examples/
+# are credential-free and never import it -- see README "Code and data are
+# licensed separately".
+data = ["huggingface_hub>=0.23"]
+dev = ["pytest>=7", "pyarrow", "huggingface_hub>=0.23"]
 
 [project.scripts]
 proforma20q = "proforma20q.cli:main"
@@ -65,7 +71,10 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-proforma20q = ["configs/*.yaml", "configs/*.json", "checksums.json", "reference/*.parquet", "reference/*.csv"]
+# No reference/*.parquet: the canonical regularization statistics are
+# Compustat-derived and are fetched from a gated repository, not packaged. The
+# reference/*.csv id maps are item names and integer orderings only.
+proforma20q = ["configs/*.yaml", "configs/*.json", "checksums.json", "reference/*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

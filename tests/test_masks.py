@@ -305,27 +305,33 @@ def test_download_artifacts_md5_guard_and_pins(tmp_path):
     # every pin is a full 32-hex md5 -- catches placeholders AND the
     # transcription bug class (an ellipsized or truncated paste)
     assert all(re.fullmatch(r"[0-9a-f]{32}", v) for v in dl.ARTIFACTS.values())
-    # the record id is live, so the script must NOT be in its refuse-to-run state
-    assert re.fullmatch(r"[0-9]+", dl.ZENODO_RECORD)
+    # every remote-path hint must name an artifact that is actually pinned
+    assert set(dl.REMOTE_HINTS) <= set(dl.ARTIFACTS)
 
     # ...but the placeholder guard itself must still work. Exercise it by putting
     # the module back into the pre-release state, rather than by leaving the repo
     # in it -- otherwise this test would be asserting the release never happened.
     #
-    # `fetch` is stubbed to fail loudly rather than left live: the guard firing is
-    # what keeps this test offline, and the scenario the test exists for is the
-    # guard being BROKEN -- in which case an unstubbed main() would reach a real
-    # urlretrieve and report an opaque HTTPError from CI instead of the actual
-    # failure. Stubbing keeps it hermetic in both outcomes.
-    orig_record, orig_fetch = dl.ZENODO_RECORD, dl.fetch
-    dl.ZENODO_RECORD = "REPLACE_WITH_ZENODO_RECORD_ID"
-    dl.fetch = lambda *a, **k: pytest.fail(
-        "placeholder guard did not fire: main() reached the network path")
+    # BOTH network entry points are stubbed to fail loudly rather than left live:
+    # the guard firing is what keeps this test offline, and the scenario the test
+    # exists for is the guard being BROKEN -- in which case an unstubbed main()
+    # would reach the Hub and report an opaque auth error from CI instead of the
+    # actual failure. Stubbing keeps it hermetic in both outcomes.
+    orig_pins = dict(dl.ARTIFACTS)
+    orig_fetch, orig_list = dl.fetch, dl.list_repo_files
+
+    def _boom(*a, **k):
+        pytest.fail("placeholder guard did not fire: main() reached the network path")
+
+    dl.ARTIFACTS["full_sample_mask_bits.npy"] = "REPLACE_WITH_MASK_MD5"
+    dl.fetch, dl.list_repo_files = _boom, _boom
     try:
         with pytest.raises(SystemExit, match="unfilled release placeholders"):
             dl.main(["--only", "full_sample_mask_bits.npy", "--out", str(tmp_path)])
     finally:
-        dl.ZENODO_RECORD, dl.fetch = orig_record, orig_fetch
+        dl.ARTIFACTS.clear()
+        dl.ARTIFACTS.update(orig_pins)
+        dl.fetch, dl.list_repo_files = orig_fetch, orig_list
 
 
 def test_download_artifacts_only_cannot_drop_the_sidecar():
@@ -344,13 +350,12 @@ def test_download_artifacts_only_cannot_drop_the_sidecar():
 def test_readme_artifact_digests_match_script_pins():
     """The README artifact tables duplicate 8-hex digest prefixes by hand; a
     hand copy is exactly how the superseded run-1 pin went stale (gh#15).
-    Every digest the README quotes must therefore be *anchored*: it matches
-    either the scripts/download_artifacts.py pin (the deposit copy) or the
-    md5 of the file actually tracked in this repository. The row index
-    legitimately carries one of each -- the in-repo write is gzip-recompressed,
-    the deposit keeps the original default-compression write.
-    Update policy: change scripts/download_artifacts.py (or the in-repo file)
-    first, then make the README rows agree -- this test fails on any drift."""
+    Every digest the README quotes must therefore match the
+    scripts/download_artifacts.py pin for that file. Nothing is anchored against
+    an in-repo copy any more: the Compustat-derived artifacts are gated, so the
+    script's pins are the only source of truth.
+    Update policy: change scripts/download_artifacts.py first, then make the
+    README rows agree -- this test fails on any drift."""
     dl = _load_script("download_artifacts.py")
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     rows = re.findall(r"\|\s*\[?`([A-Za-z0-9_./]+)`\]?[^|]*\|[^|]*\|\s*`([0-9a-f]{8})…`", readme)
@@ -359,34 +364,29 @@ def test_readme_artifact_digests_match_script_pins():
         listed.setdefault(path.rsplit("/", 1)[-1], set()).add(pref)
 
     anchors: dict[str, set[str]] = {name: {md5} for name, md5 in dl.ARTIFACTS.items()}
-    for rel in ("artifacts/full_sample_grid_rows.parquet",
-                "artifacts/full_sample_mask_bits.npy"):
-        p = _ROOT / rel
-        anchors.setdefault(p.name, set()).add(hashlib.md5(p.read_bytes()).hexdigest())
 
     for name, prefs in listed.items():
-        assert name in anchors, f"README table digest for {name}, which is neither pinned nor in-repo"
+        assert name in anchors, f"README table digest for {name}, which is not pinned"
         for pref in prefs:
             assert any(full.startswith(pref) for full in anchors[name]), (
-                f"README digest `{pref}…` for {name} matches neither the "
-                f"download_artifacts.py pin nor the tracked file's md5")
+                f"README digest `{pref}…` for {name} does not match the "
+                f"download_artifacts.py pin")
     for name, md5 in dl.ARTIFACTS.items():
         assert name in listed, f"{name} is pinned in download_artifacts.py but absent from the README tables"
         assert any(md5.startswith(p) for p in listed[name]), \
             f"README never lists the pinned md5 {md5} for {name}"
 
-    # The README also states the DOI in prose. Nothing otherwise ties it to the id
-    # the script actually fetches from, so a corrected record id could leave the
-    # documented DOI pointing at a different record.
-    assert f"zenodo.{dl.ZENODO_RECORD}" in readme, \
-        f"README does not mention zenodo.{dl.ZENODO_RECORD}; the DOI and ZENODO_RECORD have drifted"
-
-    # CITATION.cff states it a third time, and this one fails quietly: a stale DOI
-    # in citation metadata propagates into bibliographies and into the Zenodo and
-    # GitHub widgets, where nothing breaks the way a bad download would.
+    # The archival deposit DOI is stated in both README and CITATION.cff. It is
+    # no longer a fetch path -- the artifacts are mirrored into the gated Hub
+    # repo -- but a stale DOI in citation metadata still propagates into
+    # bibliographies, where nothing breaks the way a bad download would.
     citation = (_ROOT / "CITATION.cff").read_text(encoding="utf-8")
-    assert f"zenodo.{dl.ZENODO_RECORD}" in citation, \
-        f"CITATION.cff does not name zenodo.{dl.ZENODO_RECORD}; the DOI and ZENODO_RECORD have drifted"
+    readme_dois = set(re.findall(r"zenodo\.(\d+)", readme))
+    citation_dois = set(re.findall(r"zenodo\.(\d+)", citation))
+    assert readme_dois, "README no longer names the archival Zenodo deposit"
+    assert readme_dois == citation_dois, (
+        f"README names Zenodo record(s) {sorted(readme_dois)} but CITATION.cff "
+        f"names {sorted(citation_dois)}; the archival DOI has drifted")
 
 
 def test_release_documentation_pdf_matches_the_readme_digest():

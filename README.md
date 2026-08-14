@@ -9,14 +9,16 @@ ICAIF '26 paper; you then train *your* model and score a forecast file with our
 CLI. It is usable by someone who has never heard of the Forma model — build the
 data, train, submit.
 
-> **No firm-level data values are distributed here.** The repository contains
-> code, configs and checksums, plus three Compustat-*derived* artifacts that
-> carry no firm's reported figures: the published canonical regularization
-> statistics (per-`(feature, quarter)` `mu`/`sigma`/`k` moments, in
-> `src/proforma20q/reference/`), the Full-sample coverage bitmap, and its
-> canonical row index — a `(firm, quarter)` membership list — both in
-> `artifacts/`. WRDS / Compustat / CRSP credentials and license are entirely
-> the user's responsibility.
+> **No Compustat-derived data is distributed here.** This repository is
+> Apache-2.0 and holds code, configs and file digests only. Every
+> Compustat-*derived* artifact — the canonical regularization statistics, the
+> Full-sample coverage bitmap and its row index, the canonical per-column drift
+> statistics, and the released forecasts — is published separately under the
+> Forma Non-Commercial Research Licence (WRDS-Conditioned) from gated Hugging
+> Face repositories, and fetched on demand. The gates are automatic. See
+> [Code and data are licensed separately](#code-and-data-are-licensed-separately).
+> WRDS / Compustat / CRSP credentials and license are entirely the user's
+> responsibility.
 
 ---
 
@@ -130,14 +132,18 @@ python -c "import wrds; db = wrds.Connection(wrds_username='<user>'); print(db.r
 
 ### What you can do *without* credentials
 
-Works: `pip install -e '.[dev]'` and the full test suite (all synthetic, no WRDS);
-`proforma20q validate <file>`; `proforma20q evaluate <file> --truth
-examples/example_truth.parquet`; reading `task.yaml` / `feature_sets.yaml`;
-verifying `artifacts/full_sample_mask_bits.npy` against its manifest.
+Works with **no credentials and no network**: `pip install -e '.[dev]'` and the
+full test suite (all synthetic, no WRDS); `proforma20q validate <file>`;
+`proforma20q evaluate <file> --truth examples/example_truth.parquet`; reading
+`task.yaml` / `feature_sets.yaml`.
 
-Requires credentials, no workaround: `proforma20q build` and therefore every
-real artifact, any leaderboard number, `report-drift`, and `evaluate
---sample-mask` against the Full-sample mask.
+Needs a **Hugging Face account** (free, auto-accepted gate — see [Code and data
+are licensed separately](#code-and-data-are-licensed-separately)) but no WRDS:
+downloading the released forecasts, the Full-sample mask and its row index, and
+therefore `evaluate --sample-mask`.
+
+Requires **WRDS credentials**, no workaround: `proforma20q build` and therefore
+every real artifact, any leaderboard number, and `report-drift`.
 
 ---
 
@@ -399,19 +405,22 @@ bit-identical to the canonical snapshot.
 3. **Pin the target space.** Build with `--reg-stats canonical` so your targets
    are normalized against the published R13 statistics rather than re-estimated
    from your own vintage — see [Which reg-stats?](#which-reg-stats-the-flag-that-changes-your-ground-truth).
+   The statistics are gated; the build fetches and md5-verifies them on first
+   use, and **fails rather than silently re-estimating** — a re-estimated target
+   space shares ~0% of its target cells with the published one.
 4. **Publish statistics, not data.** `src/proforma20q/checksums.json` holds file
-   md5s plus, per tabular artifact, the row/column counts and a **per-column
-   distribution summary** (coverage, mean, sd, p05/p50/p95 of the regularized
-   values). Six aggregate scalars over a 600,000-row column reveal nothing
-   firm-level — and unlike a hash, they are *comparable*. This is a deliberate,
-   maintainer-approved exception to the no-WRDS-values rule, recorded in
-   `NOTICE` alongside the regularization statistics and the mask. Provenance:
-   the md5 pins are the canonical build's own; the distribution summary was
-   computed from the canonical R13 research artifacts — the *internal* builder's
-   output off the same panel, row-count-identical to the pins and measured to
-   agree with this package's builder at worst |Δmean| 1e-06 (see the
-   calibration below). The statistics are order-invariant, so the two builders'
-   differing row order cannot affect them; the exact recipe is
+   md5s plus, per tabular artifact, the row/column counts — all Apache-2.0,
+   since a hash is not the hashed content. The **per-column distribution
+   summary** (coverage, mean, sd, p05/p50/p95 of the regularized values) is what
+   makes drift *comparable* where a hash cannot be, but it is Compustat-derived,
+   so it ships from the [gated dataset repo](#code-and-data-are-licensed-separately)
+   as `checksums/canonical_column_stats.json` and `report-drift` fetches it.
+   Provenance: the md5 pins are the canonical build's own; the distribution
+   summary was computed from the canonical R13 research artifacts — the
+   *internal* builder's output off the same panel, row-count-identical to the
+   pins and measured to agree with this package's builder at worst |Δmean| 1e-06
+   (see the calibration below). The statistics are order-invariant, so the two
+   builders' differing row order cannot affect them; the exact recipe is
    `scripts/merge_canonical_column_stats.py` and the file records its own
    provenance in `_column_stats_source`, which `report-drift` echoes.
 5. **Check drift, with a verdict.**
@@ -421,7 +430,16 @@ bit-identical to the canonical snapshot.
    ```
    For each artifact it reports the row-count delta and the worst per-column
    move in mean, sd and coverage, then returns **PASS/FAIL** against documented
-   thresholds and **exits non-zero on FAIL**. It also checks the build's
+   thresholds and **exits non-zero on FAIL**.
+
+   > If the canonical statistics cannot be fetched, the verdict is **NOT
+   > VERIFIED** and the command **exits non-zero**. It never degrades to a pass
+   > or a quietly skipped step: the promise is *verified by published
+   > checksums*, so an unreachable reference means unverified, and a check the
+   > user believes ran but did not is worse than no check. `--reference <dir>`
+   > computes its statistics locally and needs no gate.
+
+   It also checks the build's
    [id maps](#if-you-train-on-the-tuple-view-the-id-maps) against the pinned
    canonical reference: account/industry orderings must match exactly
    (embedding permutation is a FAIL); the firm map is checked for the ordering
@@ -468,7 +486,7 @@ is computed on `mask ∩ your models' common sample`:
 
 ```bash
 proforma20q evaluate my_forecasts.parquet --against baselines \
-    --sample-mask artifacts/full_sample_mask_bits.npy
+    --sample-mask data/artifacts/full_sample_mask_bits.npy
 ```
 
 The mask comes in two interchangeable forms, and **which one you need depends on
@@ -481,20 +499,20 @@ your vintage**:
 | keys table (`firm, target, origin, horizon`) | **value** | **yes** — but building it needs the canonical `tabular_test`, which is not published |
 
 **The prebuilt grid-aligned mask ships in this repository** at
-[`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy)
+[`data/artifacts/full_sample_mask_bits.npy`](#data--artifacts)
 (~66 MB; md5 `a36008d8…`, pinned in
 [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
 so the command above needs no download — *if* your `tabular_test` is
 row-identical to the canonical one. It will not be: Compustat is revised, so a
 fresh pull drifts. **Pass the canonical row index alongside it and the
 bitmap works anyway** — the index ships in this repository too
-([`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet),
+([`data/artifacts/full_sample_grid_rows.parquet`](#data--artifacts),
 0.9 MB), so this route needs no download either:
 
 ```bash
 proforma20q evaluate my_forecasts.parquet --against baselines \
-    --sample-mask artifacts/full_sample_mask_bits.npy \
-    --grid-rows artifacts/full_sample_grid_rows.parquet
+    --sample-mask data/artifacts/full_sample_mask_bits.npy \
+    --grid-rows data/artifacts/full_sample_grid_rows.parquet
 ```
 
 `--grid-rows` names which `(firm, origin)` row each bit belongs to, so `evaluate`
@@ -543,31 +561,70 @@ coverage limits.
 
 ---
 
+## Code and data are licensed separately
+
+**Code: Apache-2.0.** Everything in this repository — the package, the scripts,
+the configs, the FF48 SIC ranges, the synthetic fixtures in `examples/`, and
+the md5 file digests in `src/proforma20q/checksums.json` — is Apache-2.0 and
+carries no usage restriction. A hash of a file is not that file's content.
+
+**Data: Forma Non-Commercial Research Licence (WRDS-Conditioned).** Compustat
+reaches us through a WRDS licence that is non-commercial, and the underlying
+rights are the University's. Apache-2.0 grants commercial use, so
+Compustat-derived material cannot ship under it. Those artifacts are published
+from gated Hugging Face repositories instead and fetched on demand:
+
+| artifact | where | fetched by |
+|---|---|---|
+| `reference/regularization_stats.parquet` — per-`(feature, quarter)` `mu`/`sigma`/`k`, the target space | [`forma-lab-mccombs/forma`](https://huggingface.co/forma-lab-mccombs/forma) (model) | `build --reg-stats canonical` |
+| `checksums/canonical_column_stats.json` — per-column coverage/mean/sd/p05/p50/p95 | [`forma-lab-mccombs/proforma-20q-artifacts`](https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts) (dataset) | `report-drift` |
+| the coverage bitmap, its row index, and the released forecasts | same dataset repo | `scripts/download_artifacts.py` |
+
+The regularization statistics sit with the model weights, not with the bundle,
+so the `(mu, sigma, k)` defining the target space have a single source of truth
+shared with the trained models.
+
+Both gates are **automatic** — any Hugging Face account can accept the terms and
+get immediate access. This costs an acceptance click, not a capability: every
+user of these artifacts already holds a WRDS/Compustat entitlement, because
+without one there is no panel to build. Authenticate once with
+`huggingface-cli login` (or set `HF_TOKEN`), then:
+
+```bash
+pip install -e .[data]
+```
+
+> **Coarseness is not the test.** Six aggregate moments over a 600,000-row
+> column reveal nothing firm-level — but they are still *derived* from a
+> non-commercially-licensed source, and derivation is what the WRDS terms
+> attach to. Gating the regularization statistics while shipping the column
+> statistics as "just aggregates" would be an inconsistency, so both are gated.
+
+Earlier releases did distribute the regularization statistics, the bitmap and
+the row index under Apache-2.0. Those copies remain public and that grant is
+irrevocable; this describes what is distributed **going forward**.
+
+### What is credential-free
+
+`validate` and `evaluate` against `examples/` touch none of this — no WRDS
+login, no Hugging Face token, no network:
+
+```bash
+proforma20q validate examples/example_forecast.parquet
+proforma20q evaluate examples/example_forecast.parquet --truth examples/example_truth.parquet
+```
+
+---
+
 ## Data & artifacts
 
 **No firm-level WRDS-derived *values* are distributed** — you rebuild the
 tabular/tuple artifacts yourself from your own Compustat licence
-(`proforma20q build`). Three Compustat-derived artifacts do ship — two
-*aggregates* and a *coverage index* — because none of them can reveal any
-firm's reported figures and all are needed to reproduce the paper:
-
-| artifact | what it is | why it is safe |
-|---|---|---|
-| `src/proforma20q/reference/regularization_stats__*.parquet` | per-`(feature, quarter)` `mu` / `sigma` / `k` | cross-sectional moments over thousands of firms; used by `--reg-stats canonical` to pin the target space |
-| [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | a coverage bitmap | one bit per grid cell, no identifiers and no values |
-| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | the canonical row index the mask is a bitmap over | says only *which* `(firm, quarter)` pairs are in the test split — membership, never a reported figure |
-
-The **Full-sample mask and its row index ship in this repository** — a
-coverage bitmap plus the row labels it counts through, no firm-level values:
-
-| artifact | size | md5 | for |
-|---|---|---|---|
-| [`artifacts/full_sample_mask_bits.npy`](artifacts/full_sample_mask_bits.npy) | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
-| [`artifacts/full_sample_grid_rows.parquet`](artifacts/full_sample_grid_rows.parquet) | 0.9 MB | `531f3234…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild — see [the mask section](#reproduce-the-papers-pooled-columns). The archival deposit carries the same index in a default-compression write (`adbc2ae6…`, row-identical); **this in-repo copy is the one to use.** |
-
-The remaining artifacts are deposited at
-**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**
-(CC BY 4.0, ~21.6 GB total). Fetch and verify them with:
+(`proforma20q build`). The released bundle (~21.6 GB total) is mirrored into the
+gated dataset repository from the archival deposit
+**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**, so
+the published copies are byte-identical to the archival record and the md5 pins
+below verify either way. Fetch and verify them with:
 
 ```bash
 python scripts/download_artifacts.py --out data/artifacts
@@ -587,12 +644,17 @@ absolute-error track):
 | `ffnn_large_b50__pf_full__test__predictions.parquet` | 4.5 GB | `915779a3…` | **FFNN (large)** 5-seed mixture — Panel A comparator row. |
 | `forma_lap05_fgrid__pf_full__test__predictions.parquet` | 7.4 GB | `1e8b0415…` | canonical R13 **Forma** Laplace mixture (absolute-error track) — the **Panel B** Full column. |
 | `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
-| `full_sample_grid_rows.parquet` | 1.9 MB | `adbc2ae6…` | archival copy of the in-repo **row index** — the same 352,962 rows in a default-compression write, hence a digest different from the in-repo file's. |
+| `full_sample_mask_bits.npy` | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
+| `full_sample_grid_rows.parquet` | 1.9 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over — 352,962 rows. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild; see [the mask section](#reproduce-the-papers-pooled-columns). It carries gvkeys, hence the gate. |
 
-The deposit also carries a byte-identical copy of the in-repo mask (same md5 as
-the table above) and the row index in its original default-compression write,
-so the archival record is complete on its own — but nothing in this README
-requires downloading them: the in-repo copies are canonical.
+The mask and its row index **used to ship in this repository** under
+`artifacts/`. They are Compustat-derived, so they now come from the gated
+dataset repository with everything else — download them once and pass the paths
+to `evaluate`:
+
+```bash
+python scripts/download_artifacts.py --only full_sample_mask_bits.npy full_sample_grid_rows.parquet
+```
 
 > **Joining these files to your own build:** `origin`/`quarter` in the forecasts
 > is a quarter-*end* timestamp at **microsecond** precision, while a canonical

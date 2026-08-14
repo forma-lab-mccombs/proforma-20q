@@ -296,3 +296,122 @@ def test_drift_does_not_pass_on_a_column_set_mismatch(tmp_path):
                                 {"max_abs_mean_delta": 0.05, "max_abs_sd_delta": 0.05,
                                  "max_abs_coverage_delta": 0.02})
     assert cmp["n_cols"] == 0 and cmp["n_cols_only_here"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Gated column statistics: an unreachable reference must read NOT VERIFIED.
+# --------------------------------------------------------------------------- #
+def _published_without_stats(dirpath, tmp_path):
+    """A populated published record with the column_stats stripped out.
+
+    This is the shape that actually ships: checksums.json keeps the md5 pins and
+    the counts, and the comparable statistics come from the gated repository.
+    """
+    out = tmp_path / "checksums.json"
+    write_checksums(dirpath, SUFFIX, out_path=out,
+                    download_date="2026-07-02", task_version="r13")
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    for entry in rec["artifacts"].values():
+        entry.pop("column_stats", None)
+    return rec
+
+
+def _gate_closed(monkeypatch):
+    from proforma20q.gated import GatedArtifactError
+
+    def _raise():
+        raise GatedArtifactError("Cannot access the gated repository (test)")
+
+    monkeypatch.setattr("proforma20q.checksums.load_canonical_column_stats", _raise)
+
+
+def test_drift_is_not_verified_when_the_gate_is_unreachable(tmp_path, monkeypatch):
+    """The failure mode this guards is silence. Without the canonical
+    statistics NOTHING is compared, so the report must say so and must not be a
+    pass -- the promise is "verified by published checksums", and an unreachable
+    reference means unverified."""
+    built = tmp_path / "built"
+    built.mkdir()
+    _make_processed(built)
+    published = _published_without_stats(built, tmp_path)
+    _gate_closed(monkeypatch)
+
+    rep = report_drift(built, SUFFIX, published=published)
+    assert rep["_pass"] is False, "an unfetchable reference must never read as a pass"
+    assert rep["_pass"] is not None, "and must not be indeterminate either"
+    assert "_not_verified" in rep
+    # The legacy per-column hash metric must not be allowed to stand in as a
+    # verdict: it is present in the record but decides nothing.
+    assert "_note" not in rep or "NOT VERIFIED" not in rep.get("_note", "")
+
+
+def test_report_drift_cli_says_not_verified_and_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """The words matter as much as the exit code: a user who sees anything other
+    than NOT VERIFIED will believe the build was checked."""
+    from proforma20q.cli import main
+
+    built = tmp_path / "processed"
+    built.mkdir()
+    _make_processed(built)
+    _gate_closed(monkeypatch)
+
+    rc = main(["report-drift", "--processed", str(built)])
+    out = capsys.readouterr().out
+    assert rc != 0, "an unverified build must not exit 0"
+    assert "NOT VERIFIED" in out
+    assert "not a pass" in out.lower()
+
+
+def test_drift_reference_build_needs_no_gate(tmp_path, monkeypatch):
+    """`--reference <dir>` computes its statistics locally, so it must keep
+    working with the gate closed -- otherwise the offline escape hatch the NOT
+    VERIFIED message points at would not exist."""
+    from proforma20q.checksums import reference_record
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    _make_processed(ref)
+    same = tmp_path / "same"
+    same.mkdir()
+    _make_processed(same)
+
+    _gate_closed(monkeypatch)
+    rep = report_drift(same, SUFFIX, published=reference_record(ref, SUFFIX))
+    assert rep["_pass"] is True
+    assert "_not_verified" not in rep
+
+
+def test_attach_column_stats_merges_and_guards_the_suffix(tmp_path):
+    """The gated file supplies comparison values only -- never the artifact list,
+    the md5s, or statistics computed over a different sample."""
+    import pytest
+
+    from proforma20q.checksums import attach_column_stats
+
+    built = tmp_path / "built"
+    built.mkdir()
+    _make_processed(built)
+    full = json.loads(
+        (write_checksums(built, SUFFIX, out_path=tmp_path / "c.json")).read_text(encoding="utf-8"))
+    stripped = json.loads(json.dumps(full))
+    canonical = {"suffix": SUFFIX, "artifacts": {}}
+    for name, entry in stripped["artifacts"].items():
+        cs = entry.pop("column_stats", None)
+        if cs is not None:
+            canonical["artifacts"][name] = {"n_rows": entry["n_rows"], "column_stats": cs}
+
+    merged = attach_column_stats(stripped, canonical)
+    for name, entry in full["artifacts"].items():
+        if "column_stats" in entry:
+            assert merged["artifacts"][name]["column_stats"] == entry["column_stats"]
+        assert merged["artifacts"][name]["md5"] == entry["md5"]
+
+    # statistics computed over a different sample are not a reference for this one
+    other = json.loads(json.dumps(canonical))
+    for centry in other["artifacts"].values():
+        centry["n_rows"] = centry["n_rows"] + 1
+    dropped = attach_column_stats(json.loads(json.dumps(stripped)), other)
+    assert all("column_stats" not in e for e in dropped["artifacts"].values())
+
+    with pytest.raises(ValueError, match="suffix"):
+        attach_column_stats(stripped, {"suffix": "pf_full__other", "artifacts": {}})

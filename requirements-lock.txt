@@ -44,3 +44,9 @@ tqdm==4.67.1
 
 # Download path only (not needed to score forecasts):
 wrds==3.4.0
+
+# Gated-artifact fetch only: the canonical regularization statistics
+# (`build --reg-stats canonical`), the canonical column statistics
+# (`report-drift`), and scripts/download_artifacts.py. Not needed to score
+# forecasts -- `validate` and `evaluate` against examples/ never import it.
+huggingface_hub==1.27.0

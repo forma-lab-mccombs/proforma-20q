@@ -1,8 +1,12 @@
 """Loaders for the bundled, version-controlled task configuration.
 
-Everything the benchmark needs to define itself ships inside the package (see
+Everything the benchmark needs to *define* itself ships inside the package (see
 ``configs/``): the canonical task parameters, the pf_full feature set, and the
-FF48 SIC ranges. None of it is WRDS-derived.
+FF48 SIC ranges. None of that is WRDS-derived.
+
+The canonical regularization statistics are a different matter. They are
+Compustat-derived and are fetched from a gated Hugging Face repository rather
+than bundled here -- see :mod:`proforma20q.gated`.
 """
 from __future__ import annotations
 
@@ -17,19 +21,54 @@ CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 REFERENCE_DIR = Path(__file__).resolve().parent / "reference"
 
 # The published canonical dataset tag. `--tag` names an OUTPUT dataset and is
-# free-form; this is the tag whose regularization statistics ship in reference/.
+# free-form; this is the tag the published regularization statistics belong to.
 CANONICAL_TAG = "r13_node_optionD_indfe_val8"
+
+# The canonical regularization statistics, gated. Published alongside the model
+# weights so the (mu, sigma, k) defining the target space have a single source
+# of truth shared with the trained models. The digest is over the published
+# file, which is content-identical to the copy this package shipped through
+# v0.1 (same 15,000 (feature, quarter) rows, zero difference in mu/sigma/k) but
+# written by a different parquet writer, hence a different md5.
+REG_STATS_REMOTE = "reference/regularization_stats.parquet"
+REG_STATS_MD5 = "a4cec0d8254b04cb57e7f543a901fa62"
 
 
 def canonical_reg_stats_path(tag: str = CANONICAL_TAG) -> Path:
-    """Path to the bundled canonical ``regularization_stats`` artifact.
+    """Where a *local* copy of the canonical ``regularization_stats`` would live.
 
-    Passing this (or ``--reg-stats canonical``) to the build pins the target /
-    eval normalization to the published R13 space, so the scored targets are
-    independent of the builder's Compustat vintage and BLAS/LAPACK stack.
+    The file is no longer bundled (it is Compustat-derived; see NOTICE), so this
+    path usually does not exist. It stays supported as an override: drop a copy
+    here, or pass ``--reg-stats <path>``, and no network access is needed.
+    Callers that just want a usable file should use
+    :func:`ensure_canonical_reg_stats`.
     """
     fs = load_task_config()["benchmark"]["feature_set"]
     return REFERENCE_DIR / f"regularization_stats__{fs}__{tag}.parquet"
+
+
+def ensure_canonical_reg_stats(tag: str = CANONICAL_TAG) -> Path:
+    """Resolve the canonical ``regularization_stats``, downloading if required.
+
+    Prefers a local copy (the override above, tag-specific first, then the
+    canonical tag) and otherwise fetches the published file from the gated
+    ``forma-lab-mccombs/forma`` repository and verifies its md5.
+
+    Passing the result (or ``--reg-stats canonical``) to the build pins the
+    target / eval normalization to the published R13 space, so the scored
+    targets are independent of the builder's Compustat vintage and BLAS/LAPACK
+    stack. Raises :class:`proforma20q.gated.GatedArtifactError` if the file is
+    neither local nor reachable -- never silently re-estimates, because a
+    re-estimated target space shares ~0% of its target cells with the published
+    one.
+    """
+    for candidate_tag in dict.fromkeys((tag, CANONICAL_TAG)):
+        local = canonical_reg_stats_path(candidate_tag)
+        if local.exists():
+            return local
+    from .gated import FORMA_MODEL_REPO, fetch_verified
+    return fetch_verified(FORMA_MODEL_REPO, REG_STATS_REMOTE, REG_STATS_MD5,
+                          repo_type="model")
 
 
 def canonical_id_map_path(name: str, tag: str = CANONICAL_TAG) -> Path:
