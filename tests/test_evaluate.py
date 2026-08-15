@@ -270,7 +270,8 @@ def test_validate_forecast_does_not_widen_the_target_column(tmp_path):
 
 
 def test_streams_a_pyarrow_written_forecast(tmp_path):
-    """gh#12's repro artifact was written by pyarrow (`created_by =
+    """gh#5's repro artifact (filed as gh#12 before the 2026-08 history scrub
+    renumbered the issues) was written by pyarrow (`created_by =
     parquet-cpp-arrow`) with no pandas categorical metadata, so its string
     columns come back as object. That variant read ~17 GB and died; it must
     stream and score identically to the in-memory path."""

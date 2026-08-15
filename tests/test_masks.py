@@ -377,7 +377,8 @@ def test_download_artifacts_only_cannot_drop_the_sidecar():
 
 def test_readme_artifact_digests_match_script_pins():
     """The README artifact tables duplicate 8-hex digest prefixes by hand; a
-    hand copy is exactly how the superseded run-1 pin went stale (gh#15).
+    hand copy is exactly how the superseded run-1 pin went stale (gh#7; filed
+    as gh#15 before the 2026-08 history scrub renumbered the issues).
     Every digest the README quotes must therefore match the
     scripts/download_artifacts.py pin for that file. Nothing is anchored against
     an in-repo copy any more: the Compustat-derived artifacts are gated, so the
