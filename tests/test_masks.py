@@ -6,6 +6,7 @@ from pathlib import Path
 
 import hashlib
 import re
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -403,17 +404,36 @@ def test_readme_artifact_digests_match_script_pins():
         assert any(md5.startswith(p) for p in listed[name]), \
             f"README never lists the pinned md5 {md5} for {name}"
 
-    # The archival deposit DOI is stated in both README and CITATION.cff. It is
-    # no longer a fetch path -- the artifacts are mirrored into the gated Hub
-    # repo -- but a stale DOI in citation metadata still propagates into
-    # bibliographies, where nothing breaks the way a bad download would.
+
+def test_the_gated_repositories_are_the_only_source_named():
+    """The gated Hugging Face repositories are the sole distribution point for
+    the Compustat-derived artifacts. An earlier release also mirrored most of
+    them to a Zenodo deposit, and the docs offered that as a second place the
+    md5 pins would verify against. That is no longer true, and pointing a user
+    at an ungated archive for files that are gated for licensing reasons is the
+    one stale claim here with legal rather than merely cosmetic consequences --
+    so pin its absence across the whole tree, not just the two files that
+    happened to name it."""
+    tracked = subprocess.run(["git", "ls-files"], cwd=_ROOT, capture_output=True,
+                             text=True, check=True).stdout.split()
+    offenders = []
+    for rel in tracked:
+        path = _ROOT / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # binary fixtures and the docs PDF
+        if rel == "tests/test_masks.py":
+            continue  # this test names it to forbid it
+        if re.search(r"zenodo", text, re.IGNORECASE):
+            offenders.append(rel)
+    assert not offenders, (
+        f"{offenders} still name Zenodo; the gated Hugging Face repositories are "
+        f"the only source for the Compustat-derived artifacts")
+
     citation = (_ROOT / "CITATION.cff").read_text(encoding="utf-8")
-    readme_dois = set(re.findall(r"zenodo\.(\d+)", readme))
-    citation_dois = set(re.findall(r"zenodo\.(\d+)", citation))
-    assert readme_dois, "README no longer names the archival Zenodo deposit"
-    assert readme_dois == citation_dois, (
-        f"README names Zenodo record(s) {sorted(readme_dois)} but CITATION.cff "
-        f"names {sorted(citation_dois)}; the archival DOI has drifted")
+    assert "huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts" in citation, (
+        "CITATION.cff no longer points at the gated dataset repository")
 
 
 def test_release_documentation_pdf_matches_the_readme_digest():

@@ -9,11 +9,8 @@ covering this repository's code. See README.md and NOTICE.
 
 Every file is verified against the md5 pinned below, so a truncated or
 substituted download fails loudly rather than scoring silently against the
-wrong bytes. Every pin except ``coverage_by_horizon.csv`` is unchanged from the
-Zenodo deposit this bundle mirrors (10.5281/zenodo.21269003) -- those copies are
-byte-identical to the archival record, so either source verifies against the
-same digest. The calibration series post-dates the deposit and is published only
-here.
+wrong bytes. The gated repository is the only source for these files; the pins
+are anchored against the canonical store they were published from.
 
 The bundle is one file per point-track exhibit of Table 1, plus the
 density-family sidecar, the coverage mask, its row index, and the per-horizon
@@ -83,10 +80,9 @@ from proforma20q.gated import (  # noqa: E402
 # filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json).
 # Every digest except `coverage_by_horizon.csv` was verified 2026-07-27 directly
 # over the canonical store, whose MANIFEST.tsv records the same values, and is
-# unchanged by the move to Hugging Face: those published copies mirror the
-# archival deposit byte-for-byte, so either source re-verifies the pin.
-# `coverage_by_horizon.csv` post-dates that pass and was never deposited -- the
-# gated repo is its only source, and there is no archival copy to check against.
+# unchanged by the move to Hugging Face: the published copies are byte-for-byte
+# the files that pass hashed. `coverage_by_horizon.csv` post-dates that pass, so
+# the gated repo is the only thing its pin has ever been checked against.
 ARTIFACTS: dict[str, str] = {
     "forma_fgrid__pf_full__test__predictions.parquet": "1820fcc90e71989af558f9d103d6fc31",
     "ffnn_linear_b50__pf_full__test__predictions.parquet": "e419c8330ff6c9c6396a7d2e04f05c3e",
