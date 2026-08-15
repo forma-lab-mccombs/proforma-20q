@@ -640,11 +640,12 @@ python scripts/download_artifacts.py --out data/artifacts
 python scripts/download_artifacts.py --only full_sample_grid_rows.parquet   # or a subset
 ```
 
-Every file is md5-checked against the pins below before it is accepted, and a
-download is staged under `.part` until it verifies — a truncated or substituted
-file fails loudly instead of scoring silently against the wrong bytes. Exhibit
-labels refer to the paper's Table 1 (Panel A = squared-error track, Panel B =
-absolute-error track):
+Every file is md5-checked against the pins below before it is accepted: a
+download lands under `<name>.unverified` and is renamed to the real filename
+only once it verifies, so a truncated or substituted file fails loudly instead
+of scoring silently against the wrong bytes — and the rejected bytes are left
+behind under that name for inspection. Exhibit labels refer to the paper's
+Table 1 (Panel A = squared-error track, Panel B = absolute-error track):
 
 | artifact | size | md5 | for |
 |---|---|---|---|
