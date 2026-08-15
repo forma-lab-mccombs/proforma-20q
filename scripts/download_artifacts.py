@@ -80,9 +80,12 @@ from proforma20q.gated import (  # noqa: E402
 )
 
 # filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json).
-# Digests verified 2026-07-27 directly over the canonical store, whose
-# MANIFEST.tsv records the same values, and unchanged by the move to Hugging
-# Face: the published copies mirror the archival deposit byte-for-byte.
+# Every digest except `coverage_by_horizon.csv` was verified 2026-07-27 directly
+# over the canonical store, whose MANIFEST.tsv records the same values, and is
+# unchanged by the move to Hugging Face: those published copies mirror the
+# archival deposit byte-for-byte, so either source re-verifies the pin.
+# `coverage_by_horizon.csv` post-dates that pass and was never deposited -- the
+# gated repo is its only source, and there is no archival copy to check against.
 ARTIFACTS: dict[str, str] = {
     "forma_fgrid__pf_full__test__predictions.parquet": "1820fcc90e71989af558f9d103d6fc31",
     "ffnn_linear_b50__pf_full__test__predictions.parquet": "e419c8330ff6c9c6396a7d2e04f05c3e",
@@ -94,10 +97,10 @@ ARTIFACTS: dict[str, str] = {
     "coverage_by_horizon.csv": "a0949f70307cf1d36f3adc212f2f0950",
 }
 
-# Where each artifact sits inside the repository. For every entry but the last
-# this is only a hint: anything not found at the exact path is resolved by
-# UNIQUE basename against the repo listing, so a layout change does not break
-# this script.
+# Where each artifact sits inside the repository. For every entry except
+# `coverage_by_horizon.csv` this is only a hint: anything not found at the exact
+# path is resolved by UNIQUE basename against the repo listing, so a layout
+# change does not break this script.
 #
 # `coverage_by_horizon.csv` is the exception -- its hint is load-bearing. The
 # repository holds five files with that basename (the canonical series here,
