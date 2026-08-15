@@ -39,6 +39,13 @@ density-family sidecar, the coverage mask, and its row index:
   reproducing the paper's sample from costing a 3.7 GB forecast download; it
   cannot be derived from the forecast, which omits 23,970 canonical rows it
   never forecast. It carries gvkeys, hence the gate.
+* ``coverage_by_horizon.csv`` -- the per-horizon calibration series behind the
+  paper's coverage claim: horizons 1-20 plus a pooled row, with ``mean_pit``,
+  ``z2_mixture``, ``crps_mixture`` and central-interval coverage at nominal
+  50/80/90/95% for the canonical Forma 5-seed Gaussian mixture. The paper
+  quotes the pooled row (72.6/89.6/93.7/95.8%) and refers to this file for the
+  per-horizon detail. The matching series for each comparator lives beside it
+  in the repository under ``calibration/<model>_calibration/``.
 
 The regularization statistics are NOT here. They ship from the gated model
 repository ``forma-lab-mccombs/forma`` as ``reference/regularization_stats.parquet``,
@@ -81,16 +88,28 @@ ARTIFACTS: dict[str, str] = {
     "forma_lap05_fgrid__pf_full__test__predictions.nll.json": "a3d8659a201a2081dd693a8f0de051c3",
     "full_sample_mask_bits.npy": "a36008d8dbfeb56992f1049fd543d781",
     "full_sample_grid_rows.parquet": "adbc2ae6eef7f23b3576af525cfbeeec",
+    "coverage_by_horizon.csv": "a0949f70307cf1d36f3adc212f2f0950",
 }
 
-# Where each artifact is expected to sit inside the repository. Only a hint:
-# anything not found at this exact path is resolved by unique basename against
-# the repo listing, so publishing under a different prefix does not break this
-# script. Files land in --out FLAT regardless, because that is what
-# `evaluate --sample-mask` and friends are documented to take.
+# Where each artifact sits inside the repository. Only a hint: anything not
+# found at this exact path is resolved by unique basename against the repo
+# listing, so a layout change does not break this script. Files land in --out
+# FLAT regardless, because that is what `evaluate --sample-mask` and friends are
+# documented to take.
 REMOTE_HINTS: dict[str, str] = {
+    "forma_fgrid__pf_full__test__predictions.parquet":
+        "forecasts/forma_fgrid__pf_full__test__predictions.parquet",
+    "ffnn_linear_b50__pf_full__test__predictions.parquet":
+        "forecasts/ffnn_linear_b50__pf_full__test__predictions.parquet",
+    "ffnn_large_b50__pf_full__test__predictions.parquet":
+        "forecasts/ffnn_large_b50__pf_full__test__predictions.parquet",
+    "forma_lap05_fgrid__pf_full__test__predictions.parquet":
+        "forecasts/forma_lap05_fgrid__pf_full__test__predictions.parquet",
+    "forma_lap05_fgrid__pf_full__test__predictions.nll.json":
+        "forecasts/forma_lap05_fgrid__pf_full__test__predictions.nll.json",
     "full_sample_mask_bits.npy": "mask/full_sample_mask_bits.npy",
     "full_sample_grid_rows.parquet": "mask/full_sample_grid_rows.parquet",
+    "coverage_by_horizon.csv": "calibration/coverage_by_horizon.csv",
 }
 
 

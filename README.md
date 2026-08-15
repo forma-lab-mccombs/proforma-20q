@@ -653,6 +653,7 @@ absolute-error track):
 | `forma_lap05_fgrid__pf_full__test__predictions.nll.json` | 33 B | `a3d8659a…` | the Laplace file's **family sidecar**. Keep it next to the parquet (the evaluator reads `{stem}.nll.json`); without it the file is **silently scored as Gaussian**. |
 | `full_sample_mask_bits.npy` | 66 MB | `a36008d8…` | the 327,244,429-cell Full-sample mask (grid-aligned packbits, no firm ids); pass to `evaluate --sample-mask`. |
 | `full_sample_grid_rows.parquet` | 1.9 MB | `adbc2ae6…` | the canonical **row index** (`grid_row, firm, origin`) the mask is a bitmap over — 352,962 rows. Pass as `evaluate --grid-rows` to apply the mask to a vintage-drifted rebuild; see [the mask section](#reproduce-the-papers-pooled-columns). It carries gvkeys, hence the gate. |
+| `coverage_by_horizon.csv` | 3.4 KB | `a0949f70…` | the **per-horizon calibration series** behind the paper's coverage claim — horizons 1–20 plus a pooled row, with `mean_pit`, `z2_mixture`, `crps_mixture` and central-interval coverage at nominal 50/80/90/95% for the canonical Forma 5-seed Gaussian mixture. |
 
 The mask and its row index **used to ship in this repository** under
 `artifacts/`. They are Compustat-derived, so they now come from the gated
@@ -676,6 +677,19 @@ They hold only **model outputs — no firm-level values**. This release covers
 the **point track (Panels A and B)**; the density track (Panel C — exact
 mixture NLL/CRPS) needs the five per-seed forecasts and is out of scope here
 ([#3](https://github.com/forma-lab-mccombs/proforma-20q/issues/3) tracks it).
+
+### Calibration series
+
+`coverage_by_horizon.csv` is the per-horizon series the paper points at when it
+reports pooled central-interval coverage of **72.6 / 89.6 / 93.7 / 95.8%** at
+nominal 50/80/90/95% — the claim that Forma's intervals never under-cover at
+any horizon. The file carries all 20 horizons plus the pooled row, so that
+statement can be checked horizon by horizon rather than taken on the pooled
+summary alone. The corresponding series for each comparator (`chronos_raw`,
+`ffnn_large_b50`, `ffnn_linear_b50`, `forma_lap05_fgrid`) sit alongside it in
+the dataset repository under `calibration/<model>_calibration/`; they are not in
+the download manifest, since the paper's coverage credential is the canonical
+Gaussian mixture.
 
 ### Documentation
 
