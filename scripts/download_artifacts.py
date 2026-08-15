@@ -9,12 +9,15 @@ covering this repository's code. See README.md and NOTICE.
 
 Every file is verified against the md5 pinned below, so a truncated or
 substituted download fails loudly rather than scoring silently against the
-wrong bytes. The pins are unchanged from the Zenodo deposit this bundle mirrors
-(10.5281/zenodo.21269003) -- the published copies are byte-identical to the
-archival record, so a file fetched either way verifies against the same digest.
+wrong bytes. Every pin except ``coverage_by_horizon.csv`` is unchanged from the
+Zenodo deposit this bundle mirrors (10.5281/zenodo.21269003) -- those copies are
+byte-identical to the archival record, so either source verifies against the
+same digest. The calibration series post-dates the deposit and is published only
+here.
 
 The bundle is one file per point-track exhibit of Table 1, plus the
-density-family sidecar, the coverage mask, and its row index:
+density-family sidecar, the coverage mask, its row index, and the per-horizon
+calibration series:
 
 * ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13
   Forma 5-seed Gaussian mixture forecast (squared-error track). Pool your
@@ -39,6 +42,14 @@ density-family sidecar, the coverage mask, and its row index:
   reproducing the paper's sample from costing a 3.7 GB forecast download; it
   cannot be derived from the forecast, which omits 23,970 canonical rows it
   never forecast. It carries gvkeys, hence the gate.
+* ``coverage_by_horizon.csv`` -- the per-horizon calibration series behind the
+  paper's coverage claim: horizons 1-20 plus a pooled row, with ``mean_pit``,
+  ``z2_mixture``, ``crps_mixture`` and central-interval coverage at nominal
+  50/80/90/95% for the canonical Forma 5-seed Gaussian mixture. The paper
+  quotes the pooled row (72.6/89.6/93.7/95.8%) and refers to this file for the
+  per-horizon detail. Every model's series lives under its own
+  ``calibration/<model>_calibration/`` directory -- this one is
+  ``forma_fgrid``; the comparators' are published but not manifested here.
 
 The regularization statistics are NOT here. They ship from the gated model
 repository ``forma-lab-mccombs/forma`` as ``reference/regularization_stats.parquet``,
@@ -70,9 +81,12 @@ from proforma20q.gated import (  # noqa: E402
 )
 
 # filename -> md5 (pinned; the mask hash also lives in full_sample_mask.manifest.json).
-# Digests verified 2026-07-27 directly over the canonical store, whose
-# MANIFEST.tsv records the same values, and unchanged by the move to Hugging
-# Face: the published copies mirror the archival deposit byte-for-byte.
+# Every digest except `coverage_by_horizon.csv` was verified 2026-07-27 directly
+# over the canonical store, whose MANIFEST.tsv records the same values, and is
+# unchanged by the move to Hugging Face: those published copies mirror the
+# archival deposit byte-for-byte, so either source re-verifies the pin.
+# `coverage_by_horizon.csv` post-dates that pass and was never deposited -- the
+# gated repo is its only source, and there is no archival copy to check against.
 ARTIFACTS: dict[str, str] = {
     "forma_fgrid__pf_full__test__predictions.parquet": "1820fcc90e71989af558f9d103d6fc31",
     "ffnn_linear_b50__pf_full__test__predictions.parquet": "e419c8330ff6c9c6396a7d2e04f05c3e",
@@ -81,16 +95,39 @@ ARTIFACTS: dict[str, str] = {
     "forma_lap05_fgrid__pf_full__test__predictions.nll.json": "a3d8659a201a2081dd693a8f0de051c3",
     "full_sample_mask_bits.npy": "a36008d8dbfeb56992f1049fd543d781",
     "full_sample_grid_rows.parquet": "adbc2ae6eef7f23b3576af525cfbeeec",
+    "coverage_by_horizon.csv": "a0949f70307cf1d36f3adc212f2f0950",
 }
 
-# Where each artifact is expected to sit inside the repository. Only a hint:
-# anything not found at this exact path is resolved by unique basename against
-# the repo listing, so publishing under a different prefix does not break this
-# script. Files land in --out FLAT regardless, because that is what
+# Where each artifact sits inside the repository. For every entry except
+# `coverage_by_horizon.csv` this is only a hint: anything not found at the exact
+# path is resolved by UNIQUE basename against the repo listing, so a layout
+# change does not break this script.
+#
+# `coverage_by_horizon.csv` is the exception -- its hint is load-bearing. Every
+# model publishes its series under `calibration/<model>_calibration/` with that
+# same basename, five in all, so the fallback has nothing unique to match and
+# `resolve_remote_path` refuses the ambiguity rather than guessing. Republishing
+# this series at any other path therefore fails the fetch until this pin is
+# updated to match. `tests/test_gated.py` pins that refusal on a synthetic
+# listing, since it is not otherwise reachable without the live gate.
+#
+# Files land in --out FLAT regardless, because that is what
 # `evaluate --sample-mask` and friends are documented to take.
 REMOTE_HINTS: dict[str, str] = {
+    "forma_fgrid__pf_full__test__predictions.parquet":
+        "forecasts/forma_fgrid__pf_full__test__predictions.parquet",
+    "ffnn_linear_b50__pf_full__test__predictions.parquet":
+        "forecasts/ffnn_linear_b50__pf_full__test__predictions.parquet",
+    "ffnn_large_b50__pf_full__test__predictions.parquet":
+        "forecasts/ffnn_large_b50__pf_full__test__predictions.parquet",
+    "forma_lap05_fgrid__pf_full__test__predictions.parquet":
+        "forecasts/forma_lap05_fgrid__pf_full__test__predictions.parquet",
+    "forma_lap05_fgrid__pf_full__test__predictions.nll.json":
+        "forecasts/forma_lap05_fgrid__pf_full__test__predictions.nll.json",
     "full_sample_mask_bits.npy": "mask/full_sample_mask_bits.npy",
     "full_sample_grid_rows.parquet": "mask/full_sample_grid_rows.parquet",
+    "coverage_by_horizon.csv":
+        "calibration/forma_fgrid_calibration/coverage_by_horizon.csv",
 }
 
 

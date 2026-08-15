@@ -25,7 +25,9 @@ Research Licence (WRDS-Conditioned), from gated Hugging Face repositories:
 
   * the canonical per-column drift statistics (coverage, mean, sd, p05/p50/p95
     per regularized column), the Full-sample coverage bitmap, its
-    (grid_row, firm, origin) row index, and the released model forecasts:
+    (grid_row, firm, origin) row index, the per-horizon calibration series
+    (coverage and scoring aggregates by forecast horizon), and the released
+    model forecasts:
       https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts
 
 Both gates are automatic: any Hugging Face account can accept the terms and get
