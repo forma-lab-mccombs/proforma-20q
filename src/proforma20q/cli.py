@@ -10,9 +10,10 @@
 No Compustat-derived data ships with this package. The canonical regularization
 statistics, the coverage mask and its row index, and the canonical per-column
 drift statistics are fetched on demand from gated Hugging Face repositories
-under the Forma Non-Commercial Research Licence (WRDS-Conditioned); the code
-here is Apache-2.0. `validate` and `evaluate` against `examples/` need no
-credentials at all; a build needs the user's own WRDS credentials (see README).
+under the Forma Non-Commercial Research Licence (the dataset bundle under its
+WRDS-Conditioned variant -- see NOTICE); the code here is Apache-2.0.
+`validate` and `evaluate` against `examples/` need no credentials at all; a
+build needs the user's own WRDS credentials (see README).
 """
 from __future__ import annotations
 

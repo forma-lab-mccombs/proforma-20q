@@ -16,7 +16,7 @@ Compustat is licensed to the authors through WRDS for non-commercial use, and
 the underlying rights are the University's. The Apache License permits
 commercial use, so Compustat-derived material cannot be distributed under it.
 Every such artifact is published separately, under the Forma Non-Commercial
-Research Licence (WRDS-Conditioned), from gated Hugging Face repositories:
+Research Licence, from gated Hugging Face repositories:
 
   * the canonical regularization statistics -- per-(feature, quarter) mu/sigma/k
     moments, which define the benchmark's target space:
@@ -30,10 +30,25 @@ Research Licence (WRDS-Conditioned), from gated Hugging Face repositories:
     model forecasts:
       https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts
 
+The two repositories carry two variants of that licence, deliberately. The
+dataset bundle is under the WRDS-Conditioned variant (v1.0): use is conditioned
+on the user holding their own valid Compustat/WRDS entitlement -- which every
+user of those artifacts necessarily does, since without one there is no panel
+to score against. The model repository, and with it the regularization
+statistics, is under the plain variant (v1.0): no firm-level value can be
+reconstructed from the weights or the aggregate statistics, so no WRDS
+entitlement is required to download or use them. Both variants are
+non-commercial only, no redistribution, attribution required, all commercial
+rights reserved to The University of Texas at Austin.
+
+The licence texts are deliberately not reproduced in this repository --
+carrying a non-commercial grant inside an Apache-2.0 tree is the confusion the
+split exists to prevent. Each ships as LICENSE.md in its repository and is what
+the gate presents for acceptance. The LICENSE file alongside this notice is
+Apache-2.0 and governs the code alone.
+
 Both gates are automatic: any Hugging Face account can accept the terms and get
-immediate access. Use of these artifacts is additionally conditioned on the user
-holding their own valid Compustat/WRDS entitlement -- which every user of them
-necessarily does, since without one there is no panel to build.
+immediate access.
 
 Coarseness is not the test. Six aggregate moments over a 600,000-row column
 reveal nothing firm-level, but they are still derived from a

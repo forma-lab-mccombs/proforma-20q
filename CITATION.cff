@@ -18,11 +18,15 @@ keywords:
   - probabilistic-forecasting
   - Compustat
 identifiers:
-  - type: doi
-    value: 10.5281/zenodo.21269003
+  - type: url
+    value: "https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts"
     description: >-
-      Archival deposit of the reference model forecasts, together with archival
-      copies of the evaluation mask and row index that ship in this repository.
+      Gated dataset repository holding the reference model forecasts, the
+      Full-sample evaluation mask and its row index, the canonical per-column
+      drift statistics, and the per-horizon calibration series. Those
+      artifacts are Compustat-derived and are distributed under the Forma
+      Non-Commercial Research Licence (WRDS-Conditioned), not under the
+      Apache-2.0 licence named above, which covers this repository's code.
 authors:
   - family-names: "Johnson"
     given-names: "Travis L."

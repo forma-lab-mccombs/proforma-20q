@@ -14,8 +14,8 @@ data, train, submit.
 > Compustat-*derived* artifact — the canonical regularization statistics, the
 > Full-sample coverage bitmap and its row index, the canonical per-column drift
 > statistics, and the released forecasts — is published separately under the
-> Forma Non-Commercial Research Licence (WRDS-Conditioned) from gated Hugging
-> Face repositories, and fetched on demand. The gates are automatic. See
+> Forma Non-Commercial Research Licence from gated Hugging Face repositories,
+> and fetched on demand. The gates are automatic. See
 > [Code and data are licensed separately](#code-and-data-are-licensed-separately).
 > WRDS / Compustat / CRSP credentials and license are entirely the user's
 > responsibility.
@@ -575,7 +575,7 @@ the configs, the FF48 SIC ranges, the synthetic fixtures in `examples/`, and
 the md5 file digests in `src/proforma20q/checksums.json` — is Apache-2.0 and
 carries no usage restriction. A hash of a file is not that file's content.
 
-**Data: Forma Non-Commercial Research Licence (WRDS-Conditioned).** Compustat
+**Data: Forma Non-Commercial Research Licence.** Compustat
 reaches us through a WRDS licence that is non-commercial, and the underlying
 rights are the University's. Apache-2.0 grants commercial use, so
 Compustat-derived material cannot ship under it. Those artifacts are published
@@ -591,11 +591,27 @@ The regularization statistics sit with the model weights, not with the bundle,
 so the `(mu, sigma, k)` defining the target space have a single source of truth
 shared with the trained models.
 
-Both gates are **automatic** — any Hugging Face account can accept the terms and
-get immediate access. This costs an acceptance click, not a capability: every
-user of these artifacts already holds a WRDS/Compustat entitlement, because
-without one there is no panel to build. Authenticate once with
-`huggingface-cli login` (or set `HF_TOKEN`), then:
+The two repositories carry two variants of the licence, and the difference is
+deliberate. The dataset bundle is under the **WRDS-Conditioned** variant
+(v1.0): your rights are conditioned on holding your own current Compustat/WRDS
+licence — an acceptance click, not a capability, since every user of those
+artifacts already holds one; without it there is no panel to score against. The
+model repository — and with it the regularization statistics — is under the
+**plain** variant (v1.0): no firm-level value can be reconstructed from the
+weights or the aggregate statistics, so downloading them requires no WRDS
+entitlement. Both variants are non-commercial only, no redistribution,
+attribution required, with all commercial rights reserved to The University of
+Texas at Austin.
+
+The licence texts are **not** reproduced in this repository — that would put
+non-commercial grants inside an Apache-2.0 tree, which is the exact confusion
+the split exists to prevent. Each ships as `LICENSE.md` in its gated repository
+and is what the gate presents for acceptance; the `LICENSE` file here is
+Apache-2.0 and governs the code alone.
+
+Both gates are **automatic** — any Hugging Face account can accept the terms
+and get immediate access. Authenticate once with `huggingface-cli login` (or
+set `HF_TOKEN`), then:
 
 ```bash
 pip install -e .[data]
@@ -628,12 +644,8 @@ proforma20q evaluate examples/example_forecast.parquet --truth examples/example_
 **No firm-level WRDS-derived *values* are distributed** — you rebuild the
 tabular/tuple artifacts yourself from your own Compustat licence
 (`proforma20q build`). The released bundle (~21.6 GB total) is served from the
-gated dataset repository. Everything except the calibration series is mirrored
-there from the archival deposit
-**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)** and is
-byte-identical to the archival record, so those pins verify either way;
-`coverage_by_horizon.csv` post-dates the deposit and is published only in the
-dataset repository. Fetch and verify them with:
+[gated dataset repository](https://huggingface.co/datasets/forma-lab-mccombs/proforma-20q-artifacts),
+which is the sole source for every file below. Fetch and verify them with:
 
 ```bash
 python scripts/download_artifacts.py --out data/artifacts

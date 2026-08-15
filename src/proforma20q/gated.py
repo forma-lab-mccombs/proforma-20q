@@ -5,13 +5,16 @@ regularization statistics, the coverage mask and its row index, and the
 canonical per-column drift statistics are all derived from Compustat via WRDS,
 whose licence is non-commercial. They are therefore distributed from gated
 Hugging Face repositories under the Forma Non-Commercial Research Licence
-(WRDS-Conditioned) rather than bundled into an Apache-2.0 tree. See README.md
-("Code and data are licensed separately") and NOTICE.
+rather than bundled into an Apache-2.0 tree -- the dataset bundle under the
+WRDS-Conditioned variant, the regularization statistics (which ship with the
+model weights) under the plain variant. See README.md ("Code and data are
+licensed separately") and NOTICE.
 
 Both gates are ``auto``: any Hugging Face account can accept the terms and get
-immediate access. Every user of these artifacts already holds a WRDS/Compustat
-entitlement -- without one there is no panel to build -- so the gate costs an
-acceptance click, not a capability.
+immediate access. The dataset bundle's WRDS condition costs an acceptance
+click, not a capability -- every user of those artifacts already holds a
+WRDS/Compustat entitlement, since without one there is no panel to score
+against. The regularization statistics carry no such condition.
 
 Two repositories, deliberately:
 
