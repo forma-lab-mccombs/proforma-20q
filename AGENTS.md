@@ -53,11 +53,19 @@ different benchmark and invalidates every published number:
 - `src/proforma20q/configs/task.yaml`
 - `src/proforma20q/configs/feature_sets.yaml`
 - `src/proforma20q/configs/ff48_sic_ranges.json`
-- `src/proforma20q/reference/regularization_stats__*.parquet`
-- `artifacts/full_sample_mask_bits.npy`
+- `src/proforma20q/reference/{account,industry}_id_map__*.csv`
 
-If checksum verification fails or `report-drift` FAILs, **that is a result to
-report, not a test to fix.** Do not adjust expected values, relax a threshold, or
+The same rule covers the gated artifacts, which are no longer in this tree but
+still define the benchmark — the regularization statistics
+(`reference/regularization_stats.parquet`), the canonical per-column statistics
+(`checksums/canonical_column_stats.json`), and the Full-sample mask and its row
+index. Never work around a gate by re-estimating: `--reg-stats estimate` builds
+a *different* target space, and its numbers are not comparable to any published
+result. Never edit the md5 pins in `checksums.py` or
+`scripts/download_artifacts.py` to make a mismatched download verify.
+
+If checksum verification fails, or `report-drift` FAILs or reports **NOT
+VERIFIED**, **that is a result to report, not a test to fix.** Do not adjust expected values, relax a threshold, or
 regenerate a pinned artifact to get a green run. A benchmark built on an edited
 definition is worse than a failing one, because it looks correct.
 

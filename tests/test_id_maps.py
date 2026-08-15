@@ -243,7 +243,9 @@ def test_report_drift_fails_on_permuted_id_maps_even_when_stats_pass(tmp_path):
     proc.mkdir()
     _make_tabular(proc)
     out = tmp_path / "checksums.json"
-    write_checksums(proc, SUFFIX, out_path=out,
+    # include_column_stats=True: this test needs a self-contained reference to
+    # compare against, and the shipped shape gets its statistics from the gate.
+    write_checksums(proc, SUFFIX, out_path=out, include_column_stats=True,
                     download_date="2026-07-02", task_version="r13")
     published = json.loads(out.read_text(encoding="utf-8"))
 

@@ -12,8 +12,23 @@ rebuild against them.
   that let ``report-drift`` report the row-count delta of a diverging vintage.
 * per-column ``column_stats`` (coverage, mean, sd, p05/p50/p95 of the
   regularized values) -> the *comparable* statistics ``report-drift`` scores
-  against :data:`DRIFT_THRESHOLDS` to render its PASS/FAIL verdict. Six
-  aggregate moments over a 600k-row column reveal nothing firm-level.
+  against :data:`DRIFT_THRESHOLDS` to render its PASS/FAIL verdict.
+
+``column_stats`` are Compustat-derived, so they are **not** in the bundled
+``checksums.json``: they are published separately in the gated dataset
+repository and fetched on demand (:func:`load_canonical_column_stats`). Six
+aggregate moments over a 600k-row column reveal nothing firm-level, but they are
+still derived from a non-commercially-licensed source, and coarseness is not the
+line -- derivation is. Shipping them under Apache-2.0 while gating the
+regularization statistics for the same reason would be inconsistent.
+
+The md5 file digests stay here: a hash of a file is not the file's content, so
+it is distributable under Apache-2.0 like the rest of the code.
+
+If the gated statistics cannot be fetched -- or are fetched but do not apply to
+the build in hand -- ``report-drift`` reports **NOT VERIFIED** and exits
+non-zero. It never degrades to a pass or a skipped check: a verification the
+user believes ran, but did not, is worse than no check.
 
 The bundled ``checksums.json`` is populated by the benchmark maintainer from the
 canonical build (``write_checksums``); users compare against it with
@@ -33,6 +48,10 @@ from .schema import PARQUET_ENGINE
 CHECKSUMS_PATH = Path(__file__).resolve().parent / "checksums.json"
 _HASH_DECIMALS = 6  # round regularized values before column hashing
 _STAT_DECIMALS = 6  # round published per-column moments
+
+# The canonical per-column statistics, gated (see the module docstring).
+COLUMN_STATS_REMOTE = "checksums/canonical_column_stats.json"
+COLUMN_STATS_MD5 = "428a9c3d4596e8472d4e3a5ee5d35d96"
 
 # Artifacts a full build produces (relative to the processed dir), by role.
 ARTIFACT_SPLITS = ("train", "val", "test")
@@ -141,9 +160,15 @@ def artifact_paths(processed_dir, suffix: str) -> dict[str, Path]:
     return {n: processed_dir / n for n in names if (processed_dir / n).exists()}
 
 
-def compute_checksums(processed_dir, suffix: str) -> dict:
+def compute_checksums(processed_dir, suffix: str, *,
+                      include_column_stats: bool = True) -> dict:
     """Compute the full checksum record for a build (file md5 + column hashes for
-    tabular artifacts)."""
+    tabular artifacts).
+
+    ``include_column_stats=False`` omits the Compustat-derived per-column
+    moments -- the shape that ships in ``checksums.json``. In-process callers
+    that only compare locally (:func:`reference_record`) keep them.
+    """
     record: dict = {"suffix": suffix, "artifacts": {}}
     for name, path in artifact_paths(processed_dir, suffix).items():
         entry = {"md5": hash_file(path)}
@@ -152,7 +177,8 @@ def compute_checksums(processed_dir, suffix: str) -> dict:
             entry["n_rows"] = int(len(df))
             entry["n_cols"] = int(df.shape[1])
             entry["column_md5"] = column_hashes(df)
-            entry["column_stats"] = column_stats(df)
+            if include_column_stats:
+                entry["column_stats"] = column_stats(df)
         record["artifacts"][name] = entry
     return record
 
@@ -165,6 +191,7 @@ def write_checksums(
     download_date: str | None = None,
     task_version: str | None = None,
     column_stats_source: str | None = None,
+    include_column_stats: bool = False,
 ) -> Path:
     """(Maintainer) Populate ``checksums.json`` from the canonical build.
 
@@ -173,8 +200,16 @@ def write_checksums(
     per-column statistics, e.g. which build produced them and how it relates to
     the canonical one) are recorded alongside the hashes; when omitted they are
     carried forward from the existing ``checksums.json`` so a re-run preserves
-    them. Only hashes and aggregate per-column statistics are written -- never
-    any firm-level value.
+    them. Only hashes and aggregate counts are written -- never any firm-level
+    value.
+
+    ``column_stats`` are **excluded by default**: they are Compustat-derived and
+    are published from the gated dataset repository, not from this Apache-2.0
+    tree (see the module docstring). Re-running the maintainer step after a new
+    vintage build must not quietly put them back. Pass
+    ``include_column_stats=True`` only to produce a record for local comparison
+    that never leaves the machine; the gated document is built by
+    ``scripts/merge_canonical_column_stats.py``.
     """
     out_path = Path(out_path)
     prior: dict = {}
@@ -183,14 +218,15 @@ def write_checksums(
             prior = json.loads(out_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             prior = {}
-    core = compute_checksums(processed_dir, suffix)
+    core = compute_checksums(processed_dir, suffix,
+                             include_column_stats=include_column_stats)
     resolved_dl = download_date if download_date is not None else prior.get("download_date")
     resolved_tv = task_version or prior.get("task_version")
     resolved_src = column_stats_source or prior.get("_column_stats_source")
     if resolved_dl is None or resolved_tv is None:
         print(f"  Warning: writing checksums with download_date={resolved_dl!r}, "
               f"task_version={resolved_tv!r} (no value passed and none in {out_path.name}).")
-    if column_stats_source is None and resolved_src is not None:
+    if include_column_stats and column_stats_source is None and resolved_src is not None:
         # Unlike a stale download_date (inert metadata), a stale provenance note
         # is printed by report-drift as the stated source of statistics it may
         # no longer describe -- exactly when the stats were just recomputed from
@@ -212,6 +248,56 @@ def write_checksums(
 
 def load_published_checksums(path=CHECKSUMS_PATH) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def load_canonical_column_stats() -> dict:
+    """Fetch and md5-verify the gated canonical per-column statistics.
+
+    Raises :class:`proforma20q.gated.GatedArtifactError` when the repository is
+    unreachable or the user has not accepted the gate. Callers must surface that
+    as NOT VERIFIED rather than continuing without a comparison.
+    """
+    from .gated import ARTIFACTS_REPO, fetch_verified
+    path = fetch_verified(ARTIFACTS_REPO, COLUMN_STATS_REMOTE, COLUMN_STATS_MD5,
+                          repo_type="dataset")
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _needs_column_stats(pub: dict) -> bool:
+    """True when any published tabular artifact has no ``column_stats`` inline."""
+    return any("column_stats" not in e
+               for name, e in pub.items() if name.startswith("tabular_"))
+
+
+def attach_column_stats(published: dict, canonical: dict | None = None) -> dict:
+    """Return ``published`` with the gated ``column_stats`` merged in.
+
+    Only fills artifacts the published record already pins, and only where it
+    carries no inline statistics -- the canonical file supplies the comparison
+    values, never the artifact list or the md5s. Mismatched row counts are
+    dropped rather than compared: statistics computed over a different sample
+    are not a reference for this one.
+    """
+    canonical = canonical if canonical is not None else load_canonical_column_stats()
+    merged = dict(published)
+    arts = {k: dict(v) for k, v in published.get("artifacts", {}).items()}
+    csuffix, psuffix = canonical.get("suffix"), published.get("suffix")
+    if csuffix and psuffix and csuffix != psuffix:
+        raise ValueError(
+            f"canonical column statistics are for suffix {csuffix!r}, but the "
+            f"published checksums pin {psuffix!r}")
+    for name, centry in canonical.get("artifacts", {}).items():
+        entry = arts.get(name)
+        if entry is None or "column_stats" in entry:
+            continue
+        n_pub, n_can = entry.get("n_rows"), centry.get("n_rows")
+        if n_pub is not None and n_can is not None and n_pub != n_can:
+            continue
+        entry["column_stats"] = centry["column_stats"]
+    merged["artifacts"] = arts
+    if canonical.get("_column_stats_source"):
+        merged["_column_stats_source"] = canonical["_column_stats_source"]
+    return merged
 
 
 def verify_checksums(processed_dir, suffix: str, published: dict | None = None) -> dict:
@@ -347,9 +433,43 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
                 "_pass": None}
     pub = published.get("artifacts", {})
     present = artifact_paths(processed_dir, suffix)  # existing files only
+
+    # The comparison statistics are gated and fetched on demand. `--reference
+    # <dir>` computes them locally from a build you already have, so it needs
+    # neither network nor gate -- only the published-reference path does. And
+    # skip the fetch when there is no local tabular artifact to compare against:
+    # that case already reports "nothing was built", so reaching for the network
+    # would only make an offline machine slow to hear it.
+    stats_error = None
+    stats_expected = (any(n.startswith("tabular_") for n in present)
+                      and published.get("_source") is None and _needs_column_stats(pub))
+    if stats_expected:
+        from .gated import GatedArtifactError
+        try:
+            published = attach_column_stats(published)
+            pub = published.get("artifacts", {})
+        except GatedArtifactError as e:
+            stats_error = str(e)
+        except (ValueError, KeyError) as e:
+            # A suffix mismatch (ValueError) or a canonical entry with no
+            # `column_stats` (KeyError) means the fetched document does not
+            # describe this build. That is still "nothing was compared", so it
+            # takes the NOT VERIFIED path rather than escaping as a traceback.
+            stats_error = (
+                f"the canonical column statistics were fetched, but do not "
+                f"describe this build: {type(e).__name__}: {e}.\n"
+                f"The gated {COLUMN_STATS_REMOTE} and the bundled checksums.json "
+                f"are pinned independently and may have drifted apart -- ask the "
+                f"maintainer to regenerate them together.")
+
     report: dict = {"_thresholds": thresholds}
     verdicts: list[bool] = []
     have_stats = False
+    # Present tabular artifacts that ended up with no comparable statistics
+    # despite the gated fetch being expected: a fetch that SUCCEEDS but yields
+    # nothing applicable (row counts moved, or the document has no entry for the
+    # artifact) leaves exactly as much verified as a fetch that failed -- nothing.
+    unverified: list[str] = []
     for name, pentry in pub.items():
         path = present.get(name)
         if path is None:
@@ -379,22 +499,25 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
                       and entry["n_cols_over_threshold"] == 0)
                 entry["pass"] = bool(ok)
                 verdicts.append(bool(ok))
-            elif "column_md5" in pentry:
-                # Legacy metric, kept only so an old checksums.json still says
-                # something. It is structurally ~100% for any real rebuild: one
-                # changed cell flips a whole column's hash, and the hash is
-                # position-sensitive while row ORDER is not part of the task
-                # definition. Never a pass/fail input.
-                built_cols = column_hashes(df)
-                pub_cols = pentry["column_md5"]
-                shared = set(built_cols) & set(pub_cols)
-                n_diff = sum(1 for c in shared if built_cols[c] != pub_cols[c])
-                entry.update({
-                    "n_cols": len(shared),
-                    "n_diff": n_diff,
-                    "frac_diff": (n_diff / len(shared)) if shared else float("nan"),
-                    "hash_metric_only": True,
-                })
+            else:
+                if stats_expected:
+                    unverified.append(name)
+                if "column_md5" in pentry:
+                    # Legacy metric, kept only so an old checksums.json still
+                    # says something. It is structurally ~100% for any real
+                    # rebuild: one changed cell flips a whole column's hash, and
+                    # the hash is position-sensitive while row ORDER is not part
+                    # of the task definition. Never a pass/fail input.
+                    built_cols = column_hashes(df)
+                    pub_cols = pentry["column_md5"]
+                    shared = set(built_cols) & set(pub_cols)
+                    n_diff = sum(1 for c in shared if built_cols[c] != pub_cols[c])
+                    entry.update({
+                        "n_cols": len(shared),
+                        "n_diff": n_diff,
+                        "frac_diff": (n_diff / len(shared)) if shared else float("nan"),
+                        "hash_metric_only": True,
+                    })
         report[name] = entry
     for name in present:
         if name not in pub:
@@ -410,7 +533,23 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
     if id_rep is not None:
         report["_id_maps"] = id_rep
 
-    if not have_stats:
+    if stats_error is None and unverified:
+        # The fetch succeeded and md5-verified, but the document it returned has
+        # nothing applicable to these artifacts -- every candidate entry was
+        # dropped as non-comparable (a new vintage's row counts, or an artifact
+        # the canonical document does not cover). Nothing was compared for them,
+        # so this is the same NOT VERIFIED case as an unreachable gate; letting
+        # it fall through to "indeterminate" would exit 0 on an unchecked build.
+        stats_error = (
+            f"the canonical column statistics were fetched and md5-verified, but "
+            f"none of them apply to: {', '.join(sorted(unverified))}.\n"
+            f"Every candidate entry was dropped as non-comparable -- the row "
+            f"counts differ from the bundled checksums.json, or the canonical "
+            f"document has no entry for these artifacts. Nothing was compared.\n"
+            f"The gated {COLUMN_STATS_REMOTE} and the bundled checksums.json are "
+            f"pinned independently; ask the maintainer to regenerate them "
+            f"together for this vintage.")
+    if not have_stats and stats_error is None:
         report["_note"] = (
             "the published checksums carry only per-column HASHES, which cannot "
             "measure drift (one changed cell flips a column, and the hash is "
@@ -422,7 +561,17 @@ def report_drift(processed_dir, suffix: str, published: dict | None = None,
         # they decide, rather than leaving it discoverable only inside the JSON
         report["_column_stats_source"] = published["_column_stats_source"]
     id_ok = id_rep["_ok"] if id_rep is not None else True
-    if (verdicts and not all(verdicts)) or not id_ok:
+    if stats_error is not None and (not have_stats or unverified):
+        # The canonical statistics could not be fetched -- or could not be
+        # applied -- so NOTHING was actually compared for at least one artifact.
+        # This must never read as a pass or as a skipped step: the promise is
+        # "verified by published checksums", and a reference that is unreachable
+        # or inapplicable means unverified. Same failure mode as the .nll.json
+        # sidecar silently defaulting to Gaussian -- a check the user believes
+        # ran, but did not, is worse than no check at all.
+        report["_not_verified"] = stats_error
+        report["_pass"] = False
+    elif (verdicts and not all(verdicts)) or not id_ok:
         # a missing artifact or a permuted/missing id map is a failure whether
         # or not comparable statistics were published
         report["_pass"] = False
