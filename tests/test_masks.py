@@ -412,16 +412,16 @@ def test_the_gated_repositories_are_the_only_source_named():
     md5 pins would verify against. That is no longer true, and pointing a user
     at an ungated archive for files that are gated for licensing reasons is the
     one stale claim here with legal rather than merely cosmetic consequences --
-    so pin its absence across the whole tree, not just the two files that
-    happened to name it."""
+    so pin its absence across the whole tree, not just the files that happened
+    to name it."""
     tracked = subprocess.run(["git", "ls-files"], cwd=_ROOT, capture_output=True,
-                             text=True, check=True).stdout.split()
+                             text=True, check=True).stdout.splitlines()
     offenders = []
     for rel in tracked:
         path = _ROOT / rel
         try:
             text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
             continue  # binary fixtures and the docs PDF
         if rel == "tests/test_masks.py":
             continue  # this test names it to forbid it

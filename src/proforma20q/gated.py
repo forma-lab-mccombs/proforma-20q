@@ -11,9 +11,10 @@ model weights) under the plain variant. See README.md ("Code and data are
 licensed separately") and NOTICE.
 
 Both gates are ``auto``: any Hugging Face account can accept the terms and get
-immediate access. Every user of these artifacts already holds a WRDS/Compustat
-entitlement -- without one there is no panel to build -- so the gate costs an
-acceptance click, not a capability.
+immediate access. The dataset bundle's WRDS condition costs an acceptance
+click, not a capability -- every user of those artifacts already holds a
+WRDS/Compustat entitlement, since without one there is no panel to score
+against. The regularization statistics carry no such condition.
 
 Two repositories, deliberately:
 
