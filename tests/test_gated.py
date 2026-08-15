@@ -107,8 +107,9 @@ def test_resolve_remote_path_refuses_a_duplicated_basename():
     score the paper's coverage claim against the wrong model's numbers if the
     md5 pin ever went stale at the same time.
     """
+    canonical = "calibration/forma_fgrid_calibration/coverage_by_horizon.csv"
     listing = [
-        "calibration/coverage_by_horizon.csv",
+        canonical,
         "calibration/chronos_raw_calibration/coverage_by_horizon.csv",
         "calibration/ffnn_large_b50_calibration/coverage_by_horizon.csv",
         "calibration/ffnn_linear_b50_calibration/coverage_by_horizon.csv",
@@ -116,14 +117,15 @@ def test_resolve_remote_path_refuses_a_duplicated_basename():
         "mask/full_sample_mask_bits.npy",
     ]
     # the pinned exact path still wins
-    assert (resolve_remote_path("calibration/coverage_by_horizon.csv", listing,
-                                ARTIFACTS_REPO) == "calibration/coverage_by_horizon.csv")
-    # ...and a basename-only lookup, or a stale hint after a republish, refuses
+    assert resolve_remote_path(canonical, listing, ARTIFACTS_REPO) == canonical
+    # ...and a basename-only lookup, or a stale hint after a republish, refuses.
+    # `calibration/coverage_by_horizon.csv` is where this series was briefly
+    # published, so it is the stale pin most likely to be tried.
     for miss in ("coverage_by_horizon.csv",
-                 "calibration/forma_fgrid_calibration/coverage_by_horizon.csv"):
+                 "calibration/coverage_by_horizon.csv"):
         with pytest.raises(GatedArtifactError, match="ambiguous") as e:
             resolve_remote_path(miss, listing, ARTIFACTS_REPO)
-        assert "calibration/coverage_by_horizon.csv" in str(e.value)
+        assert canonical in str(e.value)
 
     # an unambiguous basename is still resolved, so this is not a blanket refusal
     assert (resolve_remote_path("full_sample_mask_bits.npy", listing, ARTIFACTS_REPO)

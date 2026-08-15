@@ -688,9 +688,10 @@ reports pooled central-interval coverage of **72.6 / 89.6 / 93.7 / 95.8%** at
 nominal 50/80/90/95% — the claim that Forma's intervals never under-cover at
 any horizon. The file carries all 20 horizons plus the pooled row, so that
 statement can be checked horizon by horizon rather than taken on the pooled
-summary alone. The corresponding series for each comparator (`chronos_raw`,
-`ffnn_large_b50`, `ffnn_linear_b50`, `forma_lap05_fgrid`) sit alongside it in
-the dataset repository under `calibration/<model>_calibration/`; they are not in
+summary alone. Every model publishes its series under its own
+`calibration/<model>_calibration/` directory in the dataset repository — this
+one is `forma_fgrid`. The comparators (`chronos_raw`, `ffnn_large_b50`,
+`ffnn_linear_b50`, `forma_lap05_fgrid`) sit beside it there; they are not in
 the download manifest, since the paper's coverage credential is the canonical
 Gaussian mixture.
 

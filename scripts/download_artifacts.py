@@ -47,8 +47,9 @@ calibration series:
   ``z2_mixture``, ``crps_mixture`` and central-interval coverage at nominal
   50/80/90/95% for the canonical Forma 5-seed Gaussian mixture. The paper
   quotes the pooled row (72.6/89.6/93.7/95.8%) and refers to this file for the
-  per-horizon detail. The matching series for each comparator lives beside it
-  in the repository under ``calibration/<model>_calibration/``.
+  per-horizon detail. Every model's series lives under its own
+  ``calibration/<model>_calibration/`` directory -- this one is
+  ``forma_fgrid``; the comparators' are published but not manifested here.
 
 The regularization statistics are NOT here. They ship from the gated model
 repository ``forma-lab-mccombs/forma`` as ``reference/regularization_stats.parquet``,
@@ -102,12 +103,13 @@ ARTIFACTS: dict[str, str] = {
 # path is resolved by UNIQUE basename against the repo listing, so a layout
 # change does not break this script.
 #
-# `coverage_by_horizon.csv` is the exception -- its hint is load-bearing. The
-# repository holds five files with that basename (the canonical series here,
-# plus one per comparator under `calibration/<model>_calibration/`), so the
-# fallback has nothing unique to match and `resolve_remote_path` refuses the
-# ambiguity rather than guessing. Republishing the canonical series at any other
-# path therefore fails the fetch until this pin is updated to match.
+# `coverage_by_horizon.csv` is the exception -- its hint is load-bearing. Every
+# model publishes its series under `calibration/<model>_calibration/` with that
+# same basename, five in all, so the fallback has nothing unique to match and
+# `resolve_remote_path` refuses the ambiguity rather than guessing. Republishing
+# this series at any other path therefore fails the fetch until this pin is
+# updated to match. `tests/test_gated.py` pins that refusal on a synthetic
+# listing, since it is not otherwise reachable without the live gate.
 #
 # Files land in --out FLAT regardless, because that is what
 # `evaluate --sample-mask` and friends are documented to take.
@@ -124,7 +126,8 @@ REMOTE_HINTS: dict[str, str] = {
         "forecasts/forma_lap05_fgrid__pf_full__test__predictions.nll.json",
     "full_sample_mask_bits.npy": "mask/full_sample_mask_bits.npy",
     "full_sample_grid_rows.parquet": "mask/full_sample_grid_rows.parquet",
-    "coverage_by_horizon.csv": "calibration/coverage_by_horizon.csv",
+    "coverage_by_horizon.csv":
+        "calibration/forma_fgrid_calibration/coverage_by_horizon.csv",
 }
 
 
