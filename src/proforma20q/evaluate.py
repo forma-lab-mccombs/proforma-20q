@@ -590,10 +590,12 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log, grid_rows=None) -> n
                 f"rows), so a rebuild that gains or loses even one test row cannot use "
                 f"it as-is. The README says outright that a fresh pull will not be "
                 f"bit-identical.\n"
-                f"  FIX: pass the canonical row index that ships in this repository "
-                f"alongside it --\n"
+                f"  FIX: pass the canonical row index alongside it. It is 1.9 MB and "
+                f"comes from the same gated bundle as the mask --\n"
+                f"    python scripts/download_artifacts.py --out data/artifacts "
+                f"--only full_sample_grid_rows.parquet\n"
                 f"    proforma20q evaluate ... --sample-mask <bits>.npy "
-                f"--grid-rows artifacts/full_sample_grid_rows.parquet\n"
+                f"--grid-rows data/artifacts/full_sample_grid_rows.parquet\n"
                 f"  which realigns the bitmap onto your grid by (firm, origin) value, "
                 f"scoring the paper's cells minus the rows your vintage lacks.\n"
                 f"  Alternatively use the portable KEYS form "
@@ -601,7 +603,7 @@ def _resolve_sample_mask(sample_mask, grid: TruthGrid, log, grid_rows=None) -> n
                 f"(firm, target, origin, horizon) value -- but building it needs the "
                 f"canonical tabular_test, which is not published:\n"
                 f"    python scripts/build_full_sample_mask.py --from-bits <bits>.npy "
-                f"--truth <canonical tabular_test>.parquet --out artifacts")
+                f"--truth <canonical tabular_test>.parquet --out data/artifacts")
         bits = bits.astype(bool)
         log(f"Sample mask (grid-aligned): {int(bits.sum()):,} of {n_cells:,} cells.")
         return bits

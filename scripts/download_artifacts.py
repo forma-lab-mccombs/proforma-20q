@@ -111,8 +111,14 @@ def fetch(name: str, out_dir: Path, listing: list[str]) -> Path:
     print(f"downloading {name} from {ARTIFACTS_REPO}:{remote}")
     got = hf_download(ARTIFACTS_REPO, remote, repo_type="dataset", local_dir=staging)
     try:
-        verify_md5(got, expected, label=name)
-        os.replace(got, dest)
+        # Move out of the staging tree BEFORE verifying, so the file `verify_md5`
+        # reports as "left at <path>" survives the cleanup below. A 7.4 GB
+        # download that fails its pin is worth inspecting; deleting it and then
+        # pointing the user at the path would be the worst of both.
+        unverified = out_dir / f"{name}.unverified"
+        os.replace(got, unverified)
+        verify_md5(unverified, expected, label=name)
+        os.replace(unverified, dest)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     print(f"[ok] {name}: verified ({expected})")

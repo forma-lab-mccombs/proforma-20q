@@ -1,9 +1,11 @@
 """(Maintainer) Build the gated canonical ``column_stats`` artifact.
 
 This is the committed record of how the published ``column_stats`` were (and can
-again be) produced. ``write_checksums`` cannot do it: it recomputes *every*
-field from one directory, but the statistics may legitimately come from a
-different directory than the one whose md5 pins are being kept -- that is
+again be) produced. ``write_checksums`` cannot do it -- it does not even write
+``column_stats`` any more, precisely so that a routine repopulation cannot put
+them back into the Apache-2.0 tree. It also recomputes *every* field from one
+directory, while the statistics may legitimately come from a different directory
+than the one whose md5 pins are being kept -- that is
 exactly what happened for the published file. The canonical release build was
 deleted before its statistics were captured, so its stats were computed from
 the canonical R13 research artifacts (the internal builder's output off the

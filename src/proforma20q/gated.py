@@ -182,10 +182,12 @@ def list_repo_files(repo_id: str, *, repo_type: str = "dataset",
             "  pip install huggingface_hub"
         ) from e
     try:
-        from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+        from huggingface_hub.errors import (
+            GatedRepoError, HfHubHTTPError, RepositoryNotFoundError,
+        )
     except ImportError:  # pragma: no cover - older huggingface_hub layout
         from huggingface_hub.utils import (  # type: ignore[no-redef]
-            GatedRepoError, RepositoryNotFoundError,
+            GatedRepoError, HfHubHTTPError, RepositoryNotFoundError,
         )
     try:
         return list(HfApi().list_repo_files(repo_id, repo_type=repo_type,
@@ -196,6 +198,22 @@ def list_repo_files(repo_id: str, *, repo_type: str = "dataset",
     except RepositoryNotFoundError as e:
         raise _access_hint(repo_id, repo_type,
                            "not found, or you are not authenticated") from e
+    except HfHubHTTPError as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in (401, 403):
+            raise _access_hint(repo_id, repo_type,
+                               f"HTTP {status}: not authenticated or not authorized") from e
+        raise GatedArtifactError(
+            f"Failed to list {repo_id}: {e}") from e
+    except OSError as e:
+        # requests' ConnectionError/Timeout subclass OSError. This is the
+        # offline case, and it must arrive as a GatedArtifactError like every
+        # other failure here: callers catch that one class to print an
+        # actionable message instead of a traceback.
+        raise GatedArtifactError(
+            f"Could not reach the Hugging Face Hub to list {repo_id}: {e}\n"
+            f"Check your network connection (or HF_ENDPOINT, if you use a "
+            f"mirror); see {repo_url(repo_id, repo_type)}") from e
 
 
 def resolve_remote_path(name: str, listing, repo_id: str, repo_type: str = "dataset") -> str:

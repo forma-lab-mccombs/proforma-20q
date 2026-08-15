@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -54,7 +55,8 @@ def test_write_verify_roundtrip(tmp_path):
     _make_processed(proc)
     out = tmp_path / "checksums.json"
 
-    write_checksums(proc, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    write_checksums(proc, SUFFIX, out_path=out, include_column_stats=True,
+                    download_date="2026-07-02", task_version="r13")
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["_status"] == "populated"
     assert rec["download_date"] == "2026-07-02"
@@ -105,12 +107,13 @@ def test_column_stats_source_preserved_on_rerun(tmp_path, capsys):
     _make_processed(proc)
     out = tmp_path / "checksums.json"
 
-    write_checksums(proc, SUFFIX, out_path=out, download_date="2026-07-02",
-                    task_version="r13", column_stats_source="computed from X")
+    write_checksums(proc, SUFFIX, out_path=out, include_column_stats=True,
+                    download_date="2026-07-02", task_version="r13",
+                    column_stats_source="computed from X")
     assert json.loads(out.read_text(encoding="utf-8"))[
         "_column_stats_source"] == "computed from X"
     assert "carrying forward" not in capsys.readouterr().out  # explicit note: quiet
-    write_checksums(proc, SUFFIX, out_path=out)  # nothing passed
+    write_checksums(proc, SUFFIX, out_path=out, include_column_stats=True)  # nothing else passed
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["_column_stats_source"] == "computed from X"
     assert "carrying forward _column_stats_source" in capsys.readouterr().out
@@ -146,7 +149,8 @@ def test_drift_partial_build_mixes_missing_and_reported(tmp_path):
     ref.mkdir()
     _make_processed(ref)
     out = tmp_path / "checksums.json"
-    write_checksums(ref, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    write_checksums(ref, SUFFIX, out_path=out, include_column_stats=True,
+                    download_date="2026-07-02", task_version="r13")
     published = json.loads(out.read_text(encoding="utf-8"))
 
     proc = tmp_path / "processed"
@@ -226,7 +230,8 @@ def test_drift_detects_changed_values(tmp_path):
     proc.mkdir()
     _make_processed(proc)
     out = tmp_path / "checksums.json"
-    write_checksums(proc, SUFFIX, out_path=out, download_date="2026-07-02", task_version="r13")
+    write_checksums(proc, SUFFIX, out_path=out, include_column_stats=True,
+                    download_date="2026-07-02", task_version="r13")
     published = json.loads(out.read_text(encoding="utf-8"))
 
     # Perturb one column of the test tabular artifact -> a vintage divergence.
@@ -302,17 +307,16 @@ def test_drift_does_not_pass_on_a_column_set_mismatch(tmp_path):
 # Gated column statistics: an unreachable reference must read NOT VERIFIED.
 # --------------------------------------------------------------------------- #
 def _published_without_stats(dirpath, tmp_path):
-    """A populated published record with the column_stats stripped out.
-
-    This is the shape that actually ships: checksums.json keeps the md5 pins and
-    the counts, and the comparable statistics come from the gated repository.
+    """A populated published record with no column_stats -- what ``write_checksums``
+    writes by default, and the shape that actually ships: checksums.json keeps
+    the md5 pins and the counts, and the comparable statistics come from the
+    gated repository.
     """
     out = tmp_path / "checksums.json"
     write_checksums(dirpath, SUFFIX, out_path=out,
                     download_date="2026-07-02", task_version="r13")
     rec = json.loads(out.read_text(encoding="utf-8"))
-    for entry in rec["artifacts"].values():
-        entry.pop("column_stats", None)
+    assert all("column_stats" not in e for e in rec["artifacts"].values())
     return rec
 
 
@@ -392,7 +396,8 @@ def test_attach_column_stats_merges_and_guards_the_suffix(tmp_path):
     built.mkdir()
     _make_processed(built)
     full = json.loads(
-        (write_checksums(built, SUFFIX, out_path=tmp_path / "c.json")).read_text(encoding="utf-8"))
+        (write_checksums(built, SUFFIX, out_path=tmp_path / "c.json",
+                         include_column_stats=True)).read_text(encoding="utf-8"))
     stripped = json.loads(json.dumps(full))
     canonical = {"suffix": SUFFIX, "artifacts": {}}
     for name, entry in stripped["artifacts"].items():
@@ -415,3 +420,109 @@ def test_attach_column_stats_merges_and_guards_the_suffix(tmp_path):
 
     with pytest.raises(ValueError, match="suffix"):
         attach_column_stats(stripped, {"suffix": "pf_full__other", "artifacts": {}})
+
+
+def _canonical_doc(dirpath, *, n_rows_delta: int = 0, drop: tuple = (),
+                   suffix: str = SUFFIX, strip_stats: tuple = ()) -> dict:
+    """A gated canonical-statistics document, as published, over ``dirpath``."""
+    from proforma20q.checksums import compute_checksums
+
+    core = compute_checksums(dirpath, SUFFIX, include_column_stats=True)
+    doc: dict = {"suffix": suffix, "artifacts": {}}
+    for name, entry in core["artifacts"].items():
+        if "column_stats" not in entry or name in drop:
+            continue
+        centry = {"n_rows": entry["n_rows"] + n_rows_delta}
+        if name not in strip_stats:
+            centry["column_stats"] = entry["column_stats"]
+        doc["artifacts"][name] = centry
+    return doc
+
+
+def _gate_returns(monkeypatch, doc: dict) -> None:
+    monkeypatch.setattr("proforma20q.checksums.load_canonical_column_stats",
+                        lambda: doc)
+
+
+def test_drift_is_not_verified_when_the_fetched_stats_do_not_apply(tmp_path, monkeypatch):
+    """The gate opening is not the same as the build being checked. A fetch that
+    SUCCEEDS but yields nothing comparable -- a new vintage's row counts, so every
+    entry is dropped -- leaves exactly as much verified as a fetch that failed:
+    nothing. It used to read 'indeterminate' and exit 0, which is the silent
+    degrade the NOT VERIFIED verdict exists to eliminate."""
+    built = tmp_path / "built"
+    built.mkdir()
+    _make_processed(built)
+    published = _published_without_stats(built, tmp_path)
+    _gate_returns(monkeypatch, _canonical_doc(built, n_rows_delta=1))
+
+    rep = report_drift(built, SUFFIX, published=published)
+    assert rep["_pass"] is False, "a fetch that compares nothing must not exit 0"
+    assert "_not_verified" in rep
+    assert "none of them apply" in rep["_not_verified"]
+
+
+def test_drift_is_not_verified_when_only_some_artifacts_are_covered(tmp_path, monkeypatch):
+    """The partial case is the dangerous one: two artifacts compare and pass, the
+    third is silently unchecked. A verdict that averages over 'checked' and 'not
+    checked' is a pass the user did not earn."""
+    built = tmp_path / "built"
+    built.mkdir()
+    _make_processed(built)
+    published = _published_without_stats(built, tmp_path)
+    uncovered = f"tabular_test__{SUFFIX}.parquet"
+    _gate_returns(monkeypatch, _canonical_doc(built, drop=(uncovered,)))
+
+    rep = report_drift(built, SUFFIX, published=published)
+    # the covered artifacts did compare, and compared clean ...
+    assert rep[f"tabular_train__{SUFFIX}.parquet"]["pass"] is True
+    # ... and the uncovered one still sinks the verdict, by name
+    assert "pass" not in rep[uncovered]
+    assert rep["_pass"] is False
+    assert uncovered in rep["_not_verified"]
+
+
+def test_drift_is_not_verified_when_the_canonical_document_is_malformed(tmp_path, monkeypatch):
+    """`attach_column_stats` raises ValueError on a suffix mismatch and KeyError
+    on an entry with no column_stats. Both mean the fetched document does not
+    describe this build -- so both take the NOT VERIFIED path rather than
+    escaping report-drift as an unhandled traceback."""
+    built = tmp_path / "built"
+    built.mkdir()
+    _make_processed(built)
+    published = _published_without_stats(built, tmp_path)
+
+    _gate_returns(monkeypatch, _canonical_doc(built, suffix="pf_full__other_tag"))
+    rep = report_drift(built, SUFFIX, published=published)
+    assert rep["_pass"] is False and "ValueError" in rep["_not_verified"]
+
+    _gate_returns(monkeypatch, _canonical_doc(
+        built, strip_stats=tuple(f"tabular_{s}__{SUFFIX}.parquet"
+                                 for s in ("train", "val", "test"))))
+    rep = report_drift(built, SUFFIX, published=published)
+    assert rep["_pass"] is False and "KeyError" in rep["_not_verified"]
+
+
+def test_write_checksums_keeps_column_stats_out_of_the_apache_tree(tmp_path):
+    """The licence invariant, guarded. `column_stats` are Compustat-derived and
+    are published from the gated repository; re-running the maintainer step after
+    the next vintage build must not put them back into the shipped file, which is
+    the normal way checksums.json is regenerated."""
+    from proforma20q.checksums import CHECKSUMS_PATH
+
+    proc = tmp_path / "processed"
+    proc.mkdir()
+    _make_processed(proc)
+    out = tmp_path / "checksums.json"
+    write_checksums(proc, SUFFIX, out_path=out, download_date="2026-07-02",
+                    task_version="r13")
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["artifacts"], "the record must still be populated"
+    assert all("column_stats" not in e for e in rec["artifacts"].values())
+    assert any("column_md5" in e for e in rec["artifacts"].values()), \
+        "the md5s are hashes, not values -- they stay"
+
+    # and the file this repository actually ships carries none either
+    shipped = json.loads(Path(CHECKSUMS_PATH).read_text(encoding="utf-8"))
+    assert "column_stats" not in Path(CHECKSUMS_PATH).read_text(encoding="utf-8")
+    assert all("column_stats" not in e for e in shipped["artifacts"].values())

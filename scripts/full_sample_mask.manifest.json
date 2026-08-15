@@ -7,8 +7,11 @@
   "md5": "a36008d8dbfeb56992f1049fd543d781",
   "derivation": "forma_fgrid ensemble finite predictions INTERSECT truth-finite (target actual AND origin baseline present). forma_fgrid is the binding coverage constraint of the 8-model Full pool, so this equals the full pooled join.",
   "reproduces": "ICAIF'26 Table 1 Full column (327,244,429 cells)",
-  "in_repo_path": "artifacts/full_sample_mask_bits.npy",
-  "note": "The prebuilt mask ships in-repo at in_repo_path (md5 above); no download is needed to use it. build_command rebuilds it offline from the forma_fgrid ensemble forecast and reproduces the same md5.",
-  "build_command": "python scripts/build_full_sample_mask.py --forecast <forma_fgrid ensemble parquet> --truth data/processed/tabular_test__pf_full__r13_node_optionD_indfe_val8.parquet --out artifacts --expect 327244429",
-  "verify": "python -c \"import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())\" artifacts/full_sample_mask_bits.npy"
+  "remote_repo": "forma-lab-mccombs/proforma-20q-artifacts",
+  "remote_path": "mask/full_sample_mask_bits.npy",
+  "local_path": "data/artifacts/full_sample_mask_bits.npy",
+  "note": "The prebuilt mask is Compustat-derived, so it is not bundled in this Apache-2.0 repository: it is published from the gated dataset repo above and lands at local_path via download_command (which md5-verifies it against the md5 above). build_command rebuilds it offline from the forma_fgrid ensemble forecast and reproduces the same md5.",
+  "download_command": "python scripts/download_artifacts.py --out data/artifacts --only full_sample_mask_bits.npy",
+  "build_command": "python scripts/build_full_sample_mask.py --forecast <forma_fgrid ensemble parquet> --truth data/processed/tabular_test__pf_full__r13_node_optionD_indfe_val8.parquet --out data/artifacts --expect 327244429",
+  "verify": "python -c \"import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())\" data/artifacts/full_sample_mask_bits.npy"
 }

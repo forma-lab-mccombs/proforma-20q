@@ -336,9 +336,10 @@ def _print_drift(processed_dir, suffix, reference=None) -> int:
         # published promise is "verified by published checksums", and a
         # reference that could not be reached means UNVERIFIED, not "fine".
         print("\n  VERDICT: NOT VERIFIED")
-        print("  The canonical per-column statistics could not be fetched, so no\n"
-              "  drift comparison was performed. This is NOT a pass -- your build\n"
-              "  has not been checked against the published reference.\n")
+        print("  The canonical per-column statistics could not be fetched, or do\n"
+              "  not apply to this build, so no drift comparison was performed.\n"
+              "  This is NOT a pass -- your build has not been checked against the\n"
+              "  published reference.\n")
         for line in rep["_not_verified"].splitlines():
             print(f"  {line}")
         print("\n  Or compare against a build you already trust:\n"

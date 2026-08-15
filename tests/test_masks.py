@@ -334,6 +334,33 @@ def test_download_artifacts_md5_guard_and_pins(tmp_path):
         dl.fetch, dl.list_repo_files = orig_fetch, orig_list
 
 
+def test_download_artifacts_keeps_the_unverified_bytes_it_points_at(tmp_path):
+    """`verify_md5` tells the user the unverified file was "left at <path>", so it
+    has to actually be there. The staging tree was wiped on the failure path too,
+    which -- after a 7.4 GB download that fails its pin -- pointed the user at a
+    file that had just been deleted."""
+    dl = _load_script("download_artifacts.py")
+    name = "full_sample_mask_bits.npy"
+    out = tmp_path / "artifacts"
+    out.mkdir()
+
+    def _fake_download(repo_id, remote, repo_type="dataset", local_dir=None):
+        p = Path(local_dir) / remote
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"truncated")
+        return p
+
+    dl.hf_download = _fake_download          # freshly loaded module; nothing to restore
+    with pytest.raises(dl.GatedArtifactError, match="md5 mismatch") as e:
+        dl.fetch(name, out, [f"mask/{name}"])
+
+    left = out / f"{name}.unverified"
+    assert left.exists() and left.read_bytes() == b"truncated"
+    assert str(left) in str(e.value), "the error must name the file that survived"
+    assert not (out / name).exists(), "a failed pin must never publish the real name"
+    assert not (out / ".hf-part").exists(), "the staging tree is still cleaned up"
+
+
 def test_download_artifacts_only_cannot_drop_the_sidecar():
     """A density forecast without its {stem}.nll.json is silently scored as
     Gaussian, so --only must pull the sidecar along with its parquet."""

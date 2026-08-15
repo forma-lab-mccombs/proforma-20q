@@ -37,7 +37,7 @@ canonical ``tabular_test`` the mask was built against::
     python scripts/build_full_sample_mask.py \
         --from-bits data/artifacts/full_sample_mask_bits.npy \
         --truth     <canonical tabular_test>.parquet \
-        --out       artifacts --expect 327244429
+        --out       data/artifacts --expect 327244429
 """
 from __future__ import annotations
 

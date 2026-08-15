@@ -64,8 +64,8 @@ a *different* target space, and its numbers are not comparable to any published
 result. Never edit the md5 pins in `checksums.py` or
 `scripts/download_artifacts.py` to make a mismatched download verify.
 
-If checksum verification fails or `report-drift` FAILs, **that is a result to
-report, not a test to fix.** Do not adjust expected values, relax a threshold, or
+If checksum verification fails, or `report-drift` FAILs or reports **NOT
+VERIFIED**, **that is a result to report, not a test to fix.** Do not adjust expected values, relax a threshold, or
 regenerate a pinned artifact to get a green run. A benchmark built on an edited
 definition is worse than a failing one, because it looks correct.
 

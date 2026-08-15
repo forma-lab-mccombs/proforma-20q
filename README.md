@@ -498,16 +498,22 @@ your vintage**:
 | bit array **+ `--grid-rows`** (the published row index) | **value** | **yes** — the bitmap is realigned onto your grid by `(firm, origin)` |
 | keys table (`firm, target, origin, horizon`) | **value** | **yes** — but building it needs the canonical `tabular_test`, which is not published |
 
-**The prebuilt grid-aligned mask ships in this repository** at
-[`data/artifacts/full_sample_mask_bits.npy`](#data--artifacts)
-(~66 MB; md5 `a36008d8…`, pinned in
-[`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)),
-so the command above needs no download — *if* your `tabular_test` is
+**The prebuilt grid-aligned mask comes from the gated dataset repository**
+([`full_sample_mask_bits.npy`](#data--artifacts), 66 MB; md5 `a36008d8…`, pinned
+in [`scripts/full_sample_mask.manifest.json`](scripts/full_sample_mask.manifest.json)).
+It is Compustat-derived, so it is not bundled in this Apache-2.0 tree — fetch it
+and the row index once, into the directory the commands here use:
+
+```bash
+python scripts/download_artifacts.py --out data/artifacts \
+    --only full_sample_mask_bits.npy full_sample_grid_rows.parquet
+```
+
+That is everything the command above needs — *if* your `tabular_test` is
 row-identical to the canonical one. It will not be: Compustat is revised, so a
 fresh pull drifts. **Pass the canonical row index alongside it and the
-bitmap works anyway** — the index ships in this repository too
-([`data/artifacts/full_sample_grid_rows.parquet`](#data--artifacts),
-0.9 MB), so this route needs no download either:
+bitmap works anyway** — the index came down with the same command
+([`data/artifacts/full_sample_grid_rows.parquet`](#data--artifacts), 1.9 MB):
 
 ```bash
 proforma20q evaluate my_forecasts.parquet --against baselines \
@@ -521,7 +527,8 @@ the rows your vintage lacks — reporting exactly how many that is. **This is th
 route that keeps "score me on Forma's cells" a 67 MB proposition rather than a
 3.7 GB one**: you never need the Forma forecast to define the sample.
 
-The index cannot be derived from the published forecast, which is why it ships:
+The index cannot be derived from the published forecast, which is why it is
+published alongside the mask:
 23,970 canonical rows (6.8%) carry no forecast at all — they contribute no mask
 cells, yet still occupy grid positions the bitmap counts through.
 
