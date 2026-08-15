@@ -627,11 +627,13 @@ proforma20q evaluate examples/example_forecast.parquet --truth examples/example_
 
 **No firm-level WRDS-derived *values* are distributed** — you rebuild the
 tabular/tuple artifacts yourself from your own Compustat licence
-(`proforma20q build`). The released bundle (~21.6 GB total) is mirrored into the
-gated dataset repository from the archival deposit
-**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)**, so
-the published copies are byte-identical to the archival record and the md5 pins
-below verify either way. Fetch and verify them with:
+(`proforma20q build`). The released bundle (~21.6 GB total) is served from the
+gated dataset repository. Everything except the calibration series is mirrored
+there from the archival deposit
+**[doi:10.5281/zenodo.21269003](https://doi.org/10.5281/zenodo.21269003)** and is
+byte-identical to the archival record, so those pins verify either way;
+`coverage_by_horizon.csv` post-dates the deposit and is published only in the
+dataset repository. Fetch and verify them with:
 
 ```bash
 python scripts/download_artifacts.py --out data/artifacts

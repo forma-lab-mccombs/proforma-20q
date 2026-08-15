@@ -9,12 +9,15 @@ covering this repository's code. See README.md and NOTICE.
 
 Every file is verified against the md5 pinned below, so a truncated or
 substituted download fails loudly rather than scoring silently against the
-wrong bytes. The pins are unchanged from the Zenodo deposit this bundle mirrors
-(10.5281/zenodo.21269003) -- the published copies are byte-identical to the
-archival record, so a file fetched either way verifies against the same digest.
+wrong bytes. Every pin except ``coverage_by_horizon.csv`` is unchanged from the
+Zenodo deposit this bundle mirrors (10.5281/zenodo.21269003) -- those copies are
+byte-identical to the archival record, so either source verifies against the
+same digest. The calibration series post-dates the deposit and is published only
+here.
 
 The bundle is one file per point-track exhibit of Table 1, plus the
-density-family sidecar, the coverage mask, and its row index:
+density-family sidecar, the coverage mask, its row index, and the per-horizon
+calibration series:
 
 * ``forma_fgrid__pf_full__test__predictions.parquet`` -- the canonical R13
   Forma 5-seed Gaussian mixture forecast (squared-error track). Pool your
@@ -91,11 +94,20 @@ ARTIFACTS: dict[str, str] = {
     "coverage_by_horizon.csv": "a0949f70307cf1d36f3adc212f2f0950",
 }
 
-# Where each artifact sits inside the repository. Only a hint: anything not
-# found at this exact path is resolved by unique basename against the repo
-# listing, so a layout change does not break this script. Files land in --out
-# FLAT regardless, because that is what `evaluate --sample-mask` and friends are
-# documented to take.
+# Where each artifact sits inside the repository. For every entry but the last
+# this is only a hint: anything not found at the exact path is resolved by
+# UNIQUE basename against the repo listing, so a layout change does not break
+# this script.
+#
+# `coverage_by_horizon.csv` is the exception -- its hint is load-bearing. The
+# repository holds five files with that basename (the canonical series here,
+# plus one per comparator under `calibration/<model>_calibration/`), so the
+# fallback has nothing unique to match and `resolve_remote_path` refuses the
+# ambiguity rather than guessing. Republishing the canonical series at any other
+# path therefore fails the fetch until this pin is updated to match.
+#
+# Files land in --out FLAT regardless, because that is what
+# `evaluate --sample-mask` and friends are documented to take.
 REMOTE_HINTS: dict[str, str] = {
     "forma_fgrid__pf_full__test__predictions.parquet":
         "forecasts/forma_fgrid__pf_full__test__predictions.parquet",
