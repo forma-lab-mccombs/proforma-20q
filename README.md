@@ -729,7 +729,10 @@ release,
 (gated dataset), carries the same Forma forecasts back-transformed to **millions
 of USD** — for readers who want to use them without reimplementing the
 normalization chain. It ships predictive quantiles rather than a standard
-deviation, because a Gaussian in z-space is lognormal-tailed in dollars.
+deviation: the inverse transform is `sinh`, which is asymptotically exponential,
+so a Gaussian in z-space has a heavy right tail in dollars and a mirrored one
+into negative dollars — a standard deviation would be dominated by the top few
+percent of cells.
 
 It cannot ship the realized values, which are verbatim Compustat. Rebuild them
 from your own pull:
@@ -743,9 +746,28 @@ targets either do not exist under those names or do not mean the same thing
 under them: 20 are quarterly flows de-cumulated from a fiscal-YTD item, and 6
 are computed. `wcapq` is the one that bites — Compustat ships a column by that
 name, it merges cleanly, and the benchmark defines it as `actq - lctq`. The
-script imports `convert_ytd_to_quarterly`, `add_computed_features` and
-`pf_full_targets` from `proforma20q` rather than restating them, so it resolves
-targets through the same code path as `proforma20q build`.
+script imports `convert_ytd_to_quarterly`, `add_computed_features` and the
+target universe from `proforma20q` rather than restating them, so it resolves
+targets through the same code path as `proforma20q build`. A computed target is
+emitted only if it was actually recomputed — never by falling back to a
+like-named native column.
+
+**Pull with the canonical filters.** `comp.fundq` carries several format
+variants per firm-quarter; the universe is `indfmt=INDL, datafmt=STD, consol=C,
+popsrc=D` ([`task.yaml`](src/proforma20q/configs/task.yaml), `universe.compustat_filters`).
+Include those four columns and the script applies the filters itself. Without
+them it cannot, and warns: de-duplication would otherwise keep whichever variant
+your query happened to return last.
+
+| step | wall | peak RSS |
+|---|---|---|
+| `build_usd_truth.py`, 200 k firm-quarters → 8.3 M rows | 2.3 s | 1.4 GB |
+| `build_usd_truth.py`, 800 k firm-quarters → 33.4 M rows | 10.0 s | 5.2 GB |
+
+Roughly **0.15 GB per million output rows**, dominated by the assembled long
+frame and its sort rather than by any intermediate, so a full-coverage panel
+(~1.7 M firm-quarters) needs on the order of 10 GB. Restrict with `--targets` if
+that is tight.
 
 ---
 
