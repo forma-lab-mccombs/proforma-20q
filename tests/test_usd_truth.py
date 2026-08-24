@@ -15,6 +15,7 @@ vacuous.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -430,3 +431,156 @@ def test_junk_gvkey_on_an_included_row_still_refuses(usd):
     with pytest.raises(SystemExit) as e:
         usd.build_usd_truth(pull, targets=["revtq"])
     assert e.value.code == 2
+
+
+# ------------------------------------------------------ adversarial round 4 --
+#
+# Under the real config the recursion's only live path is the YTD branch at
+# depth 1 -- no benchmark composite takes another composite as input. The guards
+# below that (an input outside the universe, cycles, depth > 1) are insurance
+# against a feature_sets.yaml that does not exist yet, and are unreachable and
+# therefore untestable without one. These tests supply a synthetic config so the
+# insurance is actually exercised rather than merely present.
+
+def _synthetic_config(monkeypatch, usd, defs, universe):
+    """Both namespaces. add_computed_features resolves _computed_definitions
+    from proforma20q.build's globals, not the script's, so patching only the
+    script would leave the real formula table doing the actual computing."""
+    from proforma20q import build as _build
+    monkeypatch.setattr(usd, "_computed_definitions", lambda: defs)
+    monkeypatch.setattr(_build, "_computed_definitions", lambda: defs)
+    monkeypatch.setattr(usd, "benchmark_targets", lambda: universe)
+
+
+def test_composite_over_composite_resolves_through_two_levels(usd, monkeypatch):
+    """aq = bq - revtq, bq = actq - lctq. Both derivable -> aq is emitted."""
+    defs = {"bq": (["actq", "lctq"], lambda d: d["actq"] - d["lctq"]),
+            "aq": (["bq", "revtq"], lambda d: d["bq"] - d["revtq"])}
+    _synthetic_config(monkeypatch, usd, defs, ["bq", "aq", "revtq", "actq", "lctq"])
+    out = usd.build_usd_truth(_pull(), targets=["aq"])
+    # bq = 200 - 80 = 120 ; aq = 120 - revtq
+    firm = out[out.firm_id == "001690"].sort_values("quarter")
+    np.testing.assert_allclose(firm["actual_musd"].to_numpy()[:2],
+                               [120.0 - 501.0, 120.0 - 502.0])
+
+
+def test_composite_is_unresolvable_when_its_composite_input_is(usd, monkeypatch, capsys):
+    """The depth-2 case: bq cannot be computed, so aq cannot either -- even
+    though a native bq column would satisfy a one-level check."""
+    defs = {"bq": (["actq", "lctq"], lambda d: d["actq"] - d["lctq"]),
+            "aq": (["bq", "revtq"], lambda d: d["bq"] - d["revtq"])}
+    _synthetic_config(monkeypatch, usd, defs, ["bq", "aq", "revtq", "actq", "lctq"])
+    pull = _pull().drop(columns=["actq", "lctq"])
+    pull["bq"] = 777.0                       # native, differently defined
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["aq"])
+    assert e.value.code == 2
+    assert "bq" in capsys.readouterr().err
+
+
+def test_input_outside_the_universe_is_unresolvable(usd, monkeypatch, capsys):
+    """add_computed_features is passed the universe, so an input that is a
+    composite OUTSIDE it was never recomputed and its column is Compustat's."""
+    defs = {"outsider": (["actq", "lctq"], lambda d: d["actq"] - d["lctq"]),
+            "aq": (["outsider", "revtq"], lambda d: d["outsider"] - d["revtq"])}
+    _synthetic_config(monkeypatch, usd, defs, ["aq", "revtq", "actq", "lctq"])
+    pull = _pull()
+    pull["outsider"] = 555.0
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["aq"])
+    assert e.value.code == 2
+    assert "not a benchmark target" in capsys.readouterr().err
+
+
+def test_cyclic_definition_is_refused_and_terminates(usd, monkeypatch, capsys):
+    """A cycle must be refused, not recursed into forever.
+
+    In practice check_composite_ordering catches it first -- any cycle implies a
+    back-reference -- which makes the resolver's own `seen` guard doubly
+    unreachable. Kept anyway: it costs a frozenset and it is what stops a
+    RecursionError if the ordering check is ever narrowed. Asserting the
+    user-visible property (refused, exit 2, both members named) rather than
+    which of the two guards fired.
+    """
+    defs = {"aq": (["bq"], lambda d: d["bq"]),
+            "bq": (["aq"], lambda d: d["aq"])}
+    _synthetic_config(monkeypatch, usd, defs, ["aq", "bq", "revtq"])
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(_pull(), targets=["aq"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "aq" in err and "bq" in err
+
+
+def test_cycle_guard_itself_terminates(usd, monkeypatch):
+    """The resolver's own guard, reached directly -- ordering cannot save it
+    here because resolve_targets is called without check_composite_ordering."""
+    defs = {"aq": (["bq"], lambda d: d["bq"]),
+            "bq": (["aq"], lambda d: d["aq"])}
+    from proforma20q import build as _build
+    monkeypatch.setattr(usd, "_computed_definitions", lambda: defs)
+    monkeypatch.setattr(_build, "_computed_definitions", lambda: defs)
+    df = pd.DataFrame({"aq": [1.0], "bq": [2.0]})
+    out = usd.resolve_targets(df, ["aq"], universe=["aq", "bq"],
+                              ytd_sources=set(), explicit=False)
+    assert out == []          # refused, and crucially it returned at all
+
+
+def test_composite_declared_before_its_dependency_is_refused(usd, monkeypatch, capsys):
+    """add_computed_features walks the universe in order, so a composite whose
+    dependency comes LATER would be built from a native column. build() has the
+    same behaviour, so this must surface as a config bug, not be corrected here."""
+    defs = {"bq": (["actq", "lctq"], lambda d: d["actq"] - d["lctq"]),
+            "aq": (["bq", "revtq"], lambda d: d["bq"] - d["revtq"])}
+    _synthetic_config(monkeypatch, usd, defs, ["aq", "bq", "revtq", "actq", "lctq"])
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(_pull(), targets=["aq"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "declares AFTER it" in err and "feature_sets.yaml" in err
+
+
+def test_real_config_has_no_composite_over_composite(usd):
+    """Documents the live status of all of the above: today, none of it fires."""
+    from proforma20q.build import _computed_definitions
+    defs = _computed_definitions()
+    universe = usd.benchmark_targets()
+    over = {t: [c for c in defs[t][0] if c in defs]
+            for t in universe if t in defs}
+    assert not any(over.values()), f"composite-over-composite appeared: {over}"
+    usd.check_composite_ordering(universe, defs)      # must not raise
+
+
+# ---------------------------------------------------------- diagnostics Q2/N1 --
+
+def test_absent_target_is_not_described_as_a_native_column(usd, capsys):
+    """A target that simply is not in the pull must not be reported with the
+    'a native column of that name is NOT the same series' clause."""
+    pull = _pull().drop(columns=["actq", "lctq", "wcapq"])
+    with pytest.raises(SystemExit):
+        usd.build_usd_truth(pull, targets=["wcapq"])
+    err = capsys.readouterr().err
+    assert "native Compustat column" not in err
+
+
+def test_unresolvable_and_absent_are_reported_together(usd, capsys):
+    """Raising on the unresolvable ones alone sends the caller round again."""
+    pull = _pull().drop(columns=["actq", "lctq"])
+    with pytest.raises(SystemExit):
+        usd.build_usd_truth(pull, targets=["wcapq", "niq"])
+    err = capsys.readouterr().err
+    assert "wcapq" in err and "niq" in err
+
+
+def test_absent_targets_are_summarised_not_listed_as_skips(usd, capsys):
+    """Classification is observable on the default path: a target that is simply
+    not in the pull gets one summary line, while one that is present-but-not-
+    derivable gets its own SKIP line saying why. Folding the two together buries
+    the handful of real hazards under ~70 lines of noise, which is how the
+    wcapq trap goes unnoticed in the first place."""
+    pull = _pull().drop(columns=["actq", "lctq"])       # wcapq unresolvable
+    usd.build_usd_truth(pull)
+    out = capsys.readouterr().out
+    assert "SKIP wcapq:" in out
+    assert re.search(r"^  \d+ target\(s\) not in this pull: ", out, re.M), out
+    assert len([ln for ln in out.splitlines() if ln.startswith("  SKIP ")]) < 30

@@ -125,9 +125,45 @@ class Precondition(SystemExit):
         super().__init__(2)
 
 
+#: Returned by ``why_unresolvable`` for a target that is simply not in the pull,
+#: as opposed to one that is present but cannot honestly be derived. A sentinel
+#: rather than a string so the caller's branch cannot be broken by rewording.
+ABSENT = object()
+
+
 def benchmark_targets() -> list[str]:
     """The task config's own feature set, not a hardcoded 'pf_full'."""
     return feature_set_items(load_task_config()["benchmark"]["feature_set"])
+
+
+def check_composite_ordering(universe: list[str], computed: dict) -> None:
+    """Fail loudly if a composite depends on one declared after it.
+
+    ``add_computed_features`` walks ``items`` in order, so a composite over
+    another composite is only correct when its dependency comes first --
+    otherwise the formula consumes whatever native column happens to be there,
+    which is the S1 bug one level up.
+
+    No such case exists today (no benchmark composite takes a composite as
+    input). This does NOT quietly reorder if one appears, because ``build()``
+    calls the same function with the same universe-ordered list: correcting it
+    here would make this script's truth diverge from the benchmark's own
+    targets, which is the exact failure the script exists to prevent. A config
+    that trips this is a benchmark bug to surface, not to paper over.
+    """
+    pos = {t: i for i, t in enumerate(universe)}
+    for name in universe:
+        if name not in computed:
+            continue
+        for c in computed[name][0]:
+            if c in computed and c in pos and pos[c] > pos[name]:
+                raise Precondition(
+                    f"'{name}' is computed from '{c}', which the feature set "
+                    f"declares AFTER it, so add_computed_features would build "
+                    f"'{name}' from a native '{c}' rather than the recomputed "
+                    f"one. proforma20q build has the same behaviour -- fix the "
+                    f"ordering in feature_sets.yaml rather than working around "
+                    f"it here.")
 
 
 def apply_compustat_filters(df: pd.DataFrame) -> pd.DataFrame:
@@ -222,30 +258,37 @@ def resolve_targets(df: pd.DataFrame, wanted: list[str], *, universe: list[str],
             for c in computed[name][0]:
                 r = why_unresolvable(c, seen | {name})
                 if r:
-                    reasons.append(f"{c} ({r})")
+                    reasons.append(
+                        f"{c} (absent from this pull)" if r is ABSENT
+                        else f"{c} ({r})")
             return "needs " + "; ".join(reasons) if reasons else None
         if name in ytd_of:
             return (None if ytd_of[name] in ytd_sources
                     else f"needs the year-to-date source '{ytd_of[name]}y'")
-        return None if name in df.columns else "not in this pull"
+        return None if name in df.columns else ABSENT
 
     unresolvable, absent = {}, []
     for t in wanted:
         why = why_unresolvable(t, frozenset())
-        if why == "not in this pull":
+        if why is ABSENT:
             absent.append(t)
         elif why:
             unresolvable[t] = why
-        elif t not in df.columns:
-            absent.append(t)
 
-    if unresolvable and explicit:
-        raise Precondition(
-            "target(s) cannot be derived from this pull, and a native Compustat "
-            "column of the same name is NOT the same series: "
-            + "; ".join(f"{t} {why}" for t, why in sorted(unresolvable.items())))
-    if absent and explicit:
-        raise Precondition(f"requested targets not in this pull: {sorted(absent)}")
+    if explicit and (unresolvable or absent):
+        # Report both at once: raising on the unresolvable ones alone sends the
+        # caller round the loop again to discover the merely-absent ones.
+        parts = []
+        for t, why in sorted(unresolvable.items()):
+            # Only claim a native column exists when one actually does -- the
+            # same condition the SKIP line uses.
+            native = (" -- a native Compustat column of that name is present and "
+                      "is NOT the same series") if t in df.columns else ""
+            parts.append(f"{t} {why}{native}")
+        if absent:
+            parts.append(f"not in this pull: {sorted(absent)}")
+        raise Precondition("requested target(s) cannot be produced: "
+                           + "; ".join(parts))
 
     for t, why in sorted(unresolvable.items()):
         native = " (a native column of that name is present and is NOT it)" \
@@ -294,6 +337,7 @@ def build_usd_truth(raw: pd.DataFrame, targets: list[str] | None = None) -> pd.D
         say(f"  de-duplicated {n0 - len(df):,} (firm, calendar quarter) rows")
 
     universe = benchmark_targets()
+    check_composite_ordering(universe, _computed_definitions())
     df = add_computed_features(df, universe)
 
     have = resolve_targets(df, list(targets) if explicit else universe,
