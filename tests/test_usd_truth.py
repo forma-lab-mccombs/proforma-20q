@@ -15,6 +15,8 @@ vacuous.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -77,12 +79,19 @@ def test_uncomputable_composite_is_dropped_not_passed_through(usd):
     assert 999.0 not in set(out["actual_musd"].to_numpy())
 
 
-def test_naming_an_uncomputable_composite_is_an_error(usd):
-    """--targets wcapq must refuse rather than substitute the native column."""
+def test_naming_an_uncomputable_composite_is_an_error(usd, capsys):
+    """--targets wcapq must refuse rather than substitute the native column.
+
+    Asserting only the exit code is not enough: several exit-2 guards overlap,
+    so deleting this one still yields 2 via 'no targets derivable'. Pin the
+    message, and pair it with a request that would otherwise succeed -- under
+    that mutation `wcapq,revtq` silently emits revtq alone and exits 0.
+    """
     pull = _pull(wcapq_native=999.0).drop(columns=["actq", "lctq"])
     with pytest.raises(SystemExit) as e:
-        usd.build_usd_truth(pull, targets=["wcapq"])
+        usd.build_usd_truth(pull, targets=["wcapq", "revtq"])
     assert e.value.code == 2
+    assert "NOT the same series" in capsys.readouterr().err
 
 
 def test_ytd_source_is_decumulated(usd):
@@ -199,12 +208,13 @@ def test_missing_fiscal_fields_refuse_with_code_2(usd):
     assert e.value.code == 2
 
 
-def test_nothing_derivable_is_code_2_not_an_empty_success(usd):
+def test_nothing_derivable_is_code_2_not_an_empty_success(usd, capsys):
     """A zero-row parquet and exit 0 reads as success to any wrapper."""
     pull = _pull()[["gvkey", "datadate", "fyearq", "fqtr"]]
     with pytest.raises(SystemExit) as e:
         usd.build_usd_truth(pull)
     assert e.value.code == 2
+    assert "no targets derivable" in capsys.readouterr().err
 
 
 def test_unknown_requested_target_is_an_error(usd):
@@ -234,3 +244,113 @@ def test_targets_come_from_the_task_config(usd, monkeypatch):
                         lambda: {**real, "benchmark": {**real["benchmark"],
                                                        "feature_set": other}})
     assert usd.benchmark_targets() == feature_set_items(other)
+
+
+# ------------------------------------------------------ adversarial round 2 --
+
+def test_mixed_gvkey_padding_is_one_firm_not_a_collision(usd):
+    """'1690' and '001690' are the same firm. Normalizing AFTER de-duplication
+    would let both through the (firm, quarter) dedup and collide at the end --
+    surfacing as an AssertionError blaming upstream, on ordinary input (a CSV
+    chunk concatenated with a parquet one)."""
+    a = _pull(gvkeys=("1690", "2285"))
+    b = _pull(gvkeys=("001690", "002285"))
+    b["revtq"] = b["revtq"] + 1.0                 # the later row must win
+    out = usd.build_usd_truth(pd.concat([a, b], ignore_index=True), targets=["revtq"])
+    assert set(out["firm_id"]) == {"001690", "002285"}
+    assert not out.duplicated(["firm_id", "quarter", "target"]).any()
+    assert len(out) == len(a)
+
+
+def test_repeated_target_does_not_duplicate_rows(usd):
+    out = usd.build_usd_truth(_pull(), targets=["revtq", "revtq"])
+    assert not out.duplicated(["firm_id", "quarter", "target"]).any()
+    assert set(out["target"]) == {"revtq"}
+
+
+def test_native_ytd_flow_is_not_passed_through(usd, capsys):
+    """convert_ytd_to_quarterly skips a base whose {base}y is absent -- just as
+    silently as add_computed_features. A pull carrying a native oancfq and no
+    oancfy must not have it emitted as the de-cumulated series."""
+    pull = _pull().drop(columns=["oancfy"])
+    pull["oancfq"] = 42.0
+    out = usd.build_usd_truth(pull)
+    assert "oancfq" not in set(out["target"])
+    assert 42.0 not in set(out["actual_musd"].to_numpy())
+    assert "year-to-date source" in capsys.readouterr().out
+
+
+def test_naming_a_native_ytd_flow_is_an_error(usd, capsys):
+    pull = _pull().drop(columns=["oancfy"])
+    pull["oancfq"] = 42.0
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["oancfq"])
+    assert e.value.code == 2
+    assert "year-to-date source" in capsys.readouterr().err
+
+
+def test_non_benchmark_target_is_refused(usd, capsys):
+    """_computed_definitions() is wider than the benchmark (dvcq, neiq), and
+    dvcq ships natively in fundq. Without a universe check the guard vouches for
+    a column add_computed_features never touched."""
+    pull = _pull()
+    pull["dvq"], pull["dvpq"], pull["dvcq"] = 50.0, 5.0, 88888.0
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["dvcq"])
+    assert e.value.code == 2
+    assert "not benchmark targets" in capsys.readouterr().err
+
+
+def test_non_benchmark_columns_never_leak_into_the_default_run(usd):
+    pull = _pull()
+    pull["dvq"], pull["dvpq"], pull["dvcq"] = 50.0, 5.0, 88888.0
+    out = usd.build_usd_truth(pull)
+    assert "dvcq" not in set(out["target"])
+    assert "fyearq" not in set(out["target"])
+    assert set(out["target"]) <= set(usd.benchmark_targets())
+
+
+def test_requested_but_all_nan_target_is_an_error(usd, capsys):
+    """Derivable is not the same as emitted; a named target must not vanish."""
+    pull = _pull()
+    pull["actq"] = np.nan                          # wcapq computes to all-NaN
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["wcapq", "revtq"])
+    assert e.value.code == 2
+    assert "entirely missing" in capsys.readouterr().err
+
+
+def test_null_gvkey_rows_are_dropped_not_fatal(usd, capsys):
+    pull = _pull()
+    pull.loc[0, "gvkey"] = None
+    out = usd.build_usd_truth(pull, targets=["revtq"])
+    assert len(out) == len(pull) - 1
+    assert "no gvkey" in capsys.readouterr().out
+
+
+def test_filter_values_tolerate_whitespace(usd):
+    pull = _pull()
+    pull["indfmt"] = " INDL "
+    out = usd.build_usd_truth(pull, targets=["revtq"])
+    assert len(out) == len(pull)
+
+
+def test_diagnostics_precede_the_error_in_a_redirected_log(tmp_path):
+    """Buffering is only observable out of process. stdout through a pipe is
+    block-buffered while stderr is not, so unflushed diagnostics land AFTER the
+    error that they explain -- AGENTS.md section 4."""
+    pull = _pull()[["gvkey", "datadate", "fyearq", "fqtr"]]
+    src = tmp_path / "pull.parquet"
+    pull.to_parquet(src, index=False)
+    log = tmp_path / "run.log"
+    with open(log, "w", encoding="utf-8") as fh:
+        rc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "build_usd_truth.py"),
+             "--compustat", str(src), "--out", str(tmp_path / "out.parquet")],
+            stdout=fh, stderr=fh, cwd=str(ROOT)).returncode
+    assert rc == 2
+    lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    errors = [i for i, ln in enumerate(lines) if ln.startswith("error:")]
+    assert errors == [len(lines) - 1], (
+        "the error must be the last line, after the SKIP lines explaining it:\n"
+        + "\n".join(lines))

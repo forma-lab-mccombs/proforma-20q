@@ -759,15 +759,20 @@ Include those four columns and the script applies the filters itself. Without
 them it cannot, and warns: de-duplication would otherwise keep whichever variant
 your query happened to return last.
 
-| step | wall | peak RSS |
-|---|---|---|
-| `build_usd_truth.py`, 200 k firm-quarters → 8.3 M rows | 2.3 s | 1.4 GB |
-| `build_usd_truth.py`, 800 k firm-quarters → 33.4 M rows | 10.0 s | 5.2 GB |
+| step | output rows | wall | peak RSS |
+|---|---|---|---|
+| 200 k firm-quarters, ~53 % of cells populated | 8.3 M | 2.3 s | 1.4 GB |
+| 800 k firm-quarters, ~53 % populated | 33.4 M | 10.0 s | 5.2 GB |
+| 800 k firm-quarters, all 78 targets populated | 62.4 M | 15.3 s | 9.0 GB |
 
-Roughly **0.15 GB per million output rows**, dominated by the assembled long
-frame and its sort rather than by any intermediate, so a full-coverage panel
-(~1.7 M firm-quarters) needs on the order of 10 GB. Restrict with `--targets` if
-that is tight.
+Cost scales with **output** rows at roughly **0.13–0.15 GB per million**,
+dominated by the assembled long frame and its `object`-dtype sort rather than by
+any intermediate. Density is what decides where in that range you land: the
+canonical ~1.7 M firm-quarter panel is **~10 GB at the sparsity Compustat
+actually has, and ~18 GB if every target were populated**. Restrict with
+`--targets` if that is tight. (Not to be confused with a *full-coverage
+forecast*, which this README defines elsewhere as 550,620,720 rows — a different
+quantity.)
 
 ---
 
