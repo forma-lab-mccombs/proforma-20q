@@ -721,6 +721,32 @@ Gaussian mixture.
 > its code. If the two digests ever differ, this copy wins — regenerate both
 > together.
 
+### Dollar-space forecasts, and the truth panel they merge against
+
+The benchmark scores in the regularized (asinh z-score) target space. A separate
+release,
+[`forma-lab-mccombs/forma-usd-forecasts`](https://huggingface.co/datasets/forma-lab-mccombs/forma-usd-forecasts)
+(gated dataset), carries the same Forma forecasts back-transformed to **millions
+of USD** — for readers who want to use them without reimplementing the
+normalization chain. It ships predictive quantiles rather than a standard
+deviation, because a Gaussian in z-space is lognormal-tailed in dollars.
+
+It cannot ship the realized values, which are verbatim Compustat. Rebuild them
+from your own pull:
+
+```bash
+python scripts/build_usd_truth.py --compustat your_fundq.parquet --out data/usd_truth.parquet
+```
+
+**Do not merge raw Compustat columns against those forecasts.** 26 of the 78
+targets either do not exist under those names or do not mean the same thing
+under them: 20 are quarterly flows de-cumulated from a fiscal-YTD item, and 6
+are computed. `wcapq` is the one that bites — Compustat ships a column by that
+name, it merges cleanly, and the benchmark defines it as `actq - lctq`. The
+script imports `convert_ytd_to_quarterly`, `add_computed_features` and
+`pf_full_targets` from `proforma20q` rather than restating them, so it resolves
+targets through the same code path as `proforma20q build`.
+
 ---
 
 ## Task definition = single source of truth
