@@ -236,7 +236,7 @@ def resolve_targets(df: pd.DataFrame, wanted: list[str], *, universe: list[str],
     ytd_of = {f"{b}q": b for b in _ytd_bases()}
     in_universe = set(universe)
 
-    def why_unresolvable(name: str, seen: frozenset) -> str | None:
+    def why_unresolvable(name: str, seen: frozenset) -> str | object | None:
         """None if ``name`` is honestly derivable, else the reason it is not.
 
         Recursive, because derivability is a property of the transitive input
@@ -282,8 +282,12 @@ def resolve_targets(df: pd.DataFrame, wanted: list[str], *, universe: list[str],
         for t, why in sorted(unresolvable.items()):
             # Only claim a native column exists when one actually does -- the
             # same condition the SKIP line uses.
-            native = (" -- a native Compustat column of that name is present and "
-                      "is NOT the same series") if t in df.columns else ""
+            # Not necessarily a *Compustat* column: fcfq reaches here having
+            # been built by add_computed_features from bad inputs, and Compustat
+            # ships no fcfq at all. Either way the column is not the series the
+            # forecasts are of.
+            native = (" -- a column of that name is present and is NOT the "
+                      "same series") if t in df.columns else ""
             parts.append(f"{t} {why}{native}")
         if absent:
             parts.append(f"not in this pull: {sorted(absent)}")

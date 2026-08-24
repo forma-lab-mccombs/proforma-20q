@@ -560,7 +560,7 @@ def test_absent_target_is_not_described_as_a_native_column(usd, capsys):
     with pytest.raises(SystemExit):
         usd.build_usd_truth(pull, targets=["wcapq"])
     err = capsys.readouterr().err
-    assert "native Compustat column" not in err
+    assert "is NOT the same series" not in err, err
 
 
 def test_unresolvable_and_absent_are_reported_together(usd, capsys):
