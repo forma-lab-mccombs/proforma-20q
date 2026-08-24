@@ -36,6 +36,13 @@ would leave a differently-defined column sitting in the frame to be emitted as
 26 is checked against what it actually needed: unresolvable ones are dropped and
 named, and naming one in ``--targets`` is an error rather than a substitution.
 
+That check is over the TRANSITIVE input closure, not the target alone.
+``fcfq = oancfq - capxq`` is why: both of its inputs are themselves YTD-derived,
+so on a pull with native ``oancfq``/``capxq`` and no ``oancfy``/``capxy`` a
+one-level requires-check passes while the formula quietly consumes two columns
+the de-cumulation never produced -- and the script would refuse to give you
+``oancfq`` while handing you a difference of it.
+
 YOUR PULL MUST BE FILTERED THE WAY THE BENCHMARK'S IS. ``comp.fundq`` carries
 several format variants of the same firm-quarter; the canonical universe is
 ``indfmt=INDL, datafmt=STD, consol=C, popsrc=D`` (``task.yaml``,
@@ -191,18 +198,45 @@ def resolve_targets(df: pd.DataFrame, wanted: list[str], *, universe: list[str],
 
     computed = _computed_definitions()
     ytd_of = {f"{b}q": b for b in _ytd_bases()}
+    in_universe = set(universe)
+
+    def why_unresolvable(name: str, seen: frozenset) -> str | None:
+        """None if ``name`` is honestly derivable, else the reason it is not.
+
+        Recursive, because derivability is a property of the transitive input
+        closure and not of a target on its own. ``fcfq = oancfq - capxq`` is the
+        case that matters: both inputs are themselves YTD-derived, so a pull with
+        native ``oancfq``/``capxq`` and no ``oancfy``/``capxy`` satisfies a bare
+        requires-check while the formula silently consumes two columns the
+        de-cumulation never produced.
+        """
+        if name in seen:
+            return f"circular definition through {name}"
+        if name in computed:
+            if name not in in_universe:
+                # add_computed_features was passed the universe, so an item
+                # outside it was never recomputed -- any column of that name is
+                # Compustat's own and means something else.
+                return f"'{name}' is not a benchmark target, so it was not recomputed"
+            reasons = []
+            for c in computed[name][0]:
+                r = why_unresolvable(c, seen | {name})
+                if r:
+                    reasons.append(f"{c} ({r})")
+            return "needs " + "; ".join(reasons) if reasons else None
+        if name in ytd_of:
+            return (None if ytd_of[name] in ytd_sources
+                    else f"needs the year-to-date source '{ytd_of[name]}y'")
+        return None if name in df.columns else "not in this pull"
 
     unresolvable, absent = {}, []
     for t in wanted:
-        if t in computed:
-            missing = [c for c in computed[t][0] if c not in df.columns]
-            if missing:
-                unresolvable[t] = f"needs {missing}"
-                continue
-        elif t in ytd_of and ytd_of[t] not in ytd_sources:
-            unresolvable[t] = f"needs the year-to-date source '{ytd_of[t]}y'"
-            continue
-        if t not in df.columns:
+        why = why_unresolvable(t, frozenset())
+        if why == "not in this pull":
+            absent.append(t)
+        elif why:
+            unresolvable[t] = why
+        elif t not in df.columns:
             absent.append(t)
 
     if unresolvable and explicit:
@@ -239,13 +273,15 @@ def build_usd_truth(raw: pd.DataFrame, targets: list[str] | None = None) -> pd.D
     if n_null:
         say(f"  dropped {n_null:,} rows with no gvkey")
         df = df[df["firm_id"].notna()].copy()
-    # BEFORE de-duplication -- see normalize_gvkey.
-    df["firm_id"] = normalize_gvkey(df["firm_id"])
     df["quarter"] = pd.to_datetime(df["quarter"]).dt.to_period("Q").dt.end_time
 
+    # Filter first: rows the benchmark's universe excludes should not be able to
+    # abort the run on a malformed gvkey they carry. Normalization only has to
+    # precede DE-DUPLICATION, and this does.
     df = apply_compustat_filters(df)
     if df.empty:
         raise Precondition("no rows left after the canonical format filters")
+    df["firm_id"] = normalize_gvkey(df["firm_id"])
 
     # Which YTD sources the pull actually had. convert_ytd_to_quarterly drops
     # them, and skips silently for any base it never saw.

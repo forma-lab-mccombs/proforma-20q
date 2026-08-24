@@ -338,7 +338,15 @@ def test_filter_values_tolerate_whitespace(usd):
 def test_diagnostics_precede_the_error_in_a_redirected_log(tmp_path):
     """Buffering is only observable out of process. stdout through a pipe is
     block-buffered while stderr is not, so unflushed diagnostics land AFTER the
-    error that they explain -- AGENTS.md section 4."""
+    error that they explain -- AGENTS.md section 4.
+
+    Two mechanisms defend this and no single mutation separates them: say()
+    flushes each line, and Precondition flushes stdout before writing stderr.
+    They are kept deliberately, for independent reasons -- say()'s flush buys
+    live progress during a long run (which this test does not cover), while
+    Precondition's holds the ordering even for a print() that some future edit
+    forgets to route through say(). Removing EITHER leaves this test passing;
+    removing both fails it. Do not delete one as dead code."""
     pull = _pull()[["gvkey", "datadate", "fyearq", "fqtr"]]
     src = tmp_path / "pull.parquet"
     pull.to_parquet(src, index=False)
@@ -354,3 +362,71 @@ def test_diagnostics_precede_the_error_in_a_redirected_log(tmp_path):
     assert errors == [len(lines) - 1], (
         "the error must be the last line, after the SKIP lines explaining it:\n"
         + "\n".join(lines))
+
+
+# ------------------------------------------------------ adversarial round 3 --
+
+def _pull_native_flows(with_ytd=()):
+    """A pull carrying NATIVE oancfq/capxq -- the columns de-cumulation would
+    otherwise produce -- and only the YTD sources named in `with_ytd`."""
+    pull = _pull().drop(columns=["oancfy", "capxy"])
+    pull["oancfq"] = [100.0, 200.0, 300.0, 400.0] * (len(pull) // 4)
+    pull["capxq"] = [10.0, 20.0, 30.0, 40.0] * (len(pull) // 4)
+    for base in with_ytd:
+        pull[f"{base}y"] = 25.0
+    return pull
+
+
+def test_fcfq_does_not_launder_native_flows_past_the_ytd_guard(usd):
+    """Derivability is a property of the TRANSITIVE input closure. fcfq's two
+    inputs are both YTD-derived, so a one-level requires-check passes while the
+    formula consumes columns the de-cumulation never produced -- and the script
+    would refuse oancfq while happily emitting oancfq - capxq."""
+    out = usd.build_usd_truth(_pull_native_flows())
+    assert "fcfq" not in set(out["target"])
+    assert 90.0 not in set(out["actual_musd"].to_numpy())
+
+
+def test_naming_fcfq_with_native_flows_is_an_error(usd, capsys):
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(_pull_native_flows(), targets=["fcfq"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "fcfq" in err and "year-to-date source" in err
+
+
+def test_fcfq_refused_when_only_one_input_is_derivable(usd):
+    """The half-case is the quietest: oancfy present, capxy absent, native
+    capxq standing in -- the difference is wrong but entirely plausible."""
+    out = usd.build_usd_truth(_pull_native_flows(with_ytd=("oancf",)))
+    assert "fcfq" not in set(out["target"])
+
+
+def test_fcfq_is_emitted_when_both_sources_are_genuinely_present(usd):
+    """The guard must not be so strict that it refuses a correct pull."""
+    out = usd.build_usd_truth(_pull(), targets=["fcfq"])
+    assert set(out["target"]) == {"fcfq"}
+    firm = out[out.firm_id == "001690"].sort_values("quarter")
+    np.testing.assert_allclose(firm["actual_musd"].to_numpy()[:4], [40.0, 50.0, 60.0, 70.0])
+
+
+def test_excluded_rows_cannot_abort_the_run_on_their_gvkey(usd):
+    """Normalization must follow the format filter: a junk gvkey on a row the
+    benchmark's own universe discards should not fail an otherwise-good pull.
+    (It must still precede de-duplication -- see the mixed-padding test.)"""
+    good = _pull()
+    junk = _pull().iloc[[0]].copy()
+    junk["indfmt"] = "FS"
+    junk["gvkey"] = "TOTAL"
+    out = usd.build_usd_truth(pd.concat([good, junk], ignore_index=True),
+                              targets=["revtq"])
+    assert len(out) == len(good)
+    assert set(out["firm_id"]) == {"001690", "002285"}
+
+
+def test_junk_gvkey_on_an_included_row_still_refuses(usd):
+    pull = _pull()
+    pull.loc[0, "gvkey"] = "TOTAL"
+    with pytest.raises(SystemExit) as e:
+        usd.build_usd_truth(pull, targets=["revtq"])
+    assert e.value.code == 2
